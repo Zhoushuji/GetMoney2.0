@@ -31,8 +31,8 @@ export function LeadTable({ rows }: { rows: LeadRow[] }) {
                 <td>{index + 1}</td>
                 <td>{row.company_name ?? '-'}</td>
                 <td>{row.website ? <a href={row.website} target="_blank" rel="noreferrer">{row.website}</a> : '-'}</td>
-                <td>{row.facebook_url ? <a href={row.facebook_url} target="_blank" rel="noreferrer">Link</a> : '-'}</td>
-                <td>{row.linkedin_url ? <a href={row.linkedin_url} target="_blank" rel="noreferrer">Link</a> : '-'}</td>
+                <td>{row.facebook_url ? <a href={row.facebook_url} target="_blank" rel="noreferrer">{row.facebook_url}</a> : '-'}</td>
+                <td>{row.linkedin_url ? <a href={row.linkedin_url} target="_blank" rel="noreferrer">{row.linkedin_url}</a> : '-'}</td>
                 <td>{row.country ?? '-'}</td>
                 <td>{row.contact_status}</td>
                 <td>{row.contact_name || '-'}</td>

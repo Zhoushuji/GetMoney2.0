@@ -110,6 +110,19 @@ export function LeadDiscoveryPage() {
     };
   }, [taskId]);
 
+  const exportResults = async () => {
+    if (!taskId) {
+      return;
+    }
+    const response = await apiClient.get(`/leads/export?task_id=${taskId}&format=xlsx&include_contacts=true`, { responseType: 'blob' });
+    const url = window.URL.createObjectURL(new Blob([response.data]));
+    const link = document.createElement('a');
+    link.href = url;
+    link.download = 'lead-results.xlsx';
+    link.click();
+    window.URL.revokeObjectURL(url);
+  };
+
   const progressCard = useMemo(() => {
     if (!taskStatus || (view === 'results' && taskStatus.status !== 'running')) {
       return null;
@@ -169,8 +182,9 @@ export function LeadDiscoveryPage() {
 
       {view === 'results' ? (
         <>
-          <section className="panel compact-panel">
+          <section className="panel compact-panel result-toolbar">
             <strong>共找到 {totalRows} 家客户</strong>
+            <button className="button secondary" type="button" onClick={exportResults}>导出 Excel</button>
           </section>
           <LeadTable rows={rows} />
         </>

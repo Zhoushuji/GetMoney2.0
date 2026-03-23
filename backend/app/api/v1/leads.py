@@ -5,9 +5,13 @@ from io import BytesIO, StringIO
 from urllib.parse import urlparse
 from uuid import UUID, uuid4
 
+import httpx
+from bs4 import BeautifulSoup
 from fastapi import APIRouter, Query
 from fastapi.responses import Response, StreamingResponse
 from openpyxl import Workbook
+from openpyxl.styles import Alignment, Font, PatternFill
+from openpyxl.utils import get_column_letter
 
 from app.schemas.contact import ContactRead
 from app.schemas.lead import LeadListResponse, LeadRead, LeadSearchRequest
@@ -23,9 +27,8 @@ CONTACTS: dict[str, list[ContactRead]] = {}
 CHANNEL_POOL = ["google", "facebook", "linkedin", "yellowpages"]
 IGNORED_HOSTS = {"example.com", "example.org", "example.net", "linkedin.com", "www.linkedin.com", "facebook.com", "www.facebook.com"}
 GENERIC_TITLE_PATTERNS = [
-    re.compile(r"\b(home|official site|welcome)\b", re.I),
-    re.compile(r"\b(supplier|suppliers|manufacturer|manufacturers|factory|industrial|tools|power tools|valves?)\b", re.I),
-    re.compile(r"\bin\s+[A-Z][a-z]+", re.I),
+    re.compile(r"\b(home|official site|welcome|catalog|dealer|dealers|supplier|suppliers|manufacturer|manufacturers|factory|industrial|tools|power tools|valves?|distributor|distributors|quality|authorized)\b", re.I),
+    re.compile(r"\b(dubai|uae|abu dhabi|sharjah|in\s+[A-Z][a-z]+)\b", re.I),
 ]
 
 
@@ -47,23 +50,29 @@ def _is_generic_title(candidate: str) -> bool:
     return any(pattern.search(normalized) for pattern in GENERIC_TITLE_PATTERNS)
 
 
+def _tokenize(value: str) -> set[str]:
+    return {token for token in re.split(r"[^a-z0-9]+", value.lower()) if token}
+
+
 def _normalize_company_name(title: str | None, host: str, snippet: str | None) -> str:
     brand_from_domain = _domain_brand(host)
+    domain_tokens = _tokenize(brand_from_domain)
     candidates: list[str] = []
     for raw in [title or "", snippet or ""]:
         parts = [part.strip() for part in re.split(r"\||-|–|—|:", raw) if part.strip()]
         candidates.extend(parts)
 
     for candidate in candidates:
-        if candidate.lower() == "home":
+        if candidate.lower() == "home" or len(candidate) < 3:
             continue
-        if len(candidate) < 3:
-            continue
-        if not _is_generic_title(candidate):
+        candidate_tokens = _tokenize(candidate)
+        if domain_tokens & candidate_tokens and not _is_generic_title(candidate):
             return candidate
 
     for candidate in candidates:
-        if candidate.lower() != "home" and len(candidate) >= 3:
+        if candidate.lower() == "home" or len(candidate) < 3:
+            continue
+        if not _is_generic_title(candidate):
             return candidate
 
     return brand_from_domain
@@ -77,6 +86,39 @@ async def _find_social_link(serper_client: SerperClient, company_name: str, webs
         if link and site in link:
             return link
     return None
+
+
+async def _fetch_homepage_metadata(website: str) -> tuple[str | None, str | None, str | None]:
+    try:
+        async with httpx.AsyncClient(timeout=15.0, follow_redirects=True) as client:
+            response = await client.get(website, headers={"User-Agent": "Mozilla/5.0 LeadGenBot/1.0"})
+            response.raise_for_status()
+    except Exception:
+        return None, None, None
+
+    soup = BeautifulSoup(response.text, "html.parser")
+    title_candidates = [
+        (soup.find("meta", attrs={"property": "og:site_name"}) or {}).get("content"),
+        (soup.find("meta", attrs={"name": "application-name"}) or {}).get("content"),
+        (soup.find("meta", attrs={"property": "og:title"}) or {}).get("content"),
+        soup.title.string.strip() if soup.title and soup.title.string else None,
+    ]
+
+    facebook_url = None
+    linkedin_url = None
+    for anchor in soup.select("a[href]"):
+        href = anchor.get("href")
+        if not href:
+            continue
+        if not facebook_url and "facebook.com" in href:
+            facebook_url = href
+        if not linkedin_url and "linkedin.com" in href:
+            linkedin_url = href
+        if facebook_url and linkedin_url:
+            break
+
+    company_title = next((candidate for candidate in title_candidates if candidate), None)
+    return company_title, facebook_url, linkedin_url
 
 
 async def _fetch_search_results(payload: LeadSearchRequest) -> list[dict]:
@@ -97,11 +139,14 @@ async def _fetch_search_results(payload: LeadSearchRequest) -> list[dict]:
         host = parsed.netloc.lower()
         if not host or host in seen_hosts or host in IGNORED_HOSTS:
             return
-        company_name = _normalize_company_name(title, host, snippet)
+
         website = f"{parsed.scheme or 'https'}://{host}"
+        homepage_title, homepage_facebook, homepage_linkedin = await _fetch_homepage_metadata(website)
+        company_name = _normalize_company_name(homepage_title or title, host, snippet)
         seen_hosts.add(host)
-        facebook_url = await _find_social_link(serper_client, company_name, website, "facebook.com")
-        linkedin_url = await _find_social_link(serper_client, company_name, website, "linkedin.com")
+        facebook_url = homepage_facebook or await _find_social_link(serper_client, company_name, website, "facebook.com")
+        linkedin_url = homepage_linkedin or await _find_social_link(serper_client, company_name, website, "linkedin.com")
+
         collected.append({
             "company_name": company_name,
             "website": website,
@@ -117,7 +162,7 @@ async def _fetch_search_results(payload: LeadSearchRequest) -> list[dict]:
             "work_email": None,
             "phone": None,
             "whatsapp": None,
-            "raw_data": {"title": title, "snippet": snippet, "source": source},
+            "raw_data": {"search_title": title, "homepage_title": homepage_title, "snippet": snippet, "source": source},
         })
 
     for query_index, query in enumerate(queries):
@@ -151,6 +196,40 @@ def build_task_status(task: dict) -> TaskStatusResponse:
         created_at=task["created_at"],
         updated_at=task["updated_at"],
     )
+
+
+def _style_workbook(sheet) -> None:
+    header_fill = PatternFill("solid", fgColor="1F4E78")
+    header_font = Font(color="FFFFFF", bold=True)
+    center_alignment = Alignment(vertical="center", wrap_text=True)
+    sheet.freeze_panes = "A2"
+    sheet.auto_filter.ref = sheet.dimensions
+
+    for cell in sheet[1]:
+        cell.fill = header_fill
+        cell.font = header_font
+        cell.alignment = center_alignment
+
+    widths = {
+        "A": 28,
+        "B": 40,
+        "C": 40,
+        "D": 40,
+        "E": 18,
+        "F": 14,
+        "G": 24,
+        "H": 24,
+        "I": 24,
+        "J": 28,
+        "K": 20,
+        "L": 20,
+    }
+    for column, width in widths.items():
+        sheet.column_dimensions[column].width = width
+
+    for row in sheet.iter_rows(min_row=2):
+        for cell in row:
+            cell.alignment = Alignment(vertical="top", wrap_text=True)
 
 
 @router.post("/search", response_model=TaskCreateResponse)
@@ -228,15 +307,23 @@ async def export_leads(task_id: UUID, format: str = "xlsx", include_contacts: bo
 
     workbook = Workbook()
     sheet = workbook.active
-    headers = ["company_name", "website", "facebook_url", "linkedin_url", "country", "status"]
+    sheet.title = "Lead Results"
+    headers = ["Company Name", "Website", "Facebook URL", "LinkedIn URL", "Country", "Status"]
     if include_contacts:
-        headers += ["contact_name", "contact_title", "personal_email", "work_email", "phone", "whatsapp"]
+        headers += ["Contact Name", "Contact Title", "Personal Email", "Work Email", "Phone", "WhatsApp"]
     sheet.append(headers)
     for lead in leads:
         row = [lead.company_name, lead.website, lead.facebook_url, lead.linkedin_url, lead.country, lead.contact_status]
         if include_contacts:
             row += [lead.contact_name, lead.contact_title, lead.personal_email, lead.work_email, lead.phone, lead.whatsapp]
         sheet.append(row)
+    _style_workbook(sheet)
+    for row in range(2, sheet.max_row + 1):
+        for column in [2, 3, 4]:
+            cell = sheet.cell(row=row, column=column)
+            if cell.value:
+                cell.hyperlink = cell.value
+                cell.style = "Hyperlink"
     data = BytesIO()
     workbook.save(data)
     data.seek(0)

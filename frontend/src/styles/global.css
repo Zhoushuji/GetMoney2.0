@@ -60,6 +60,19 @@ button, input, select {
   margin-bottom: 20px;
 }
 .compact-panel { padding: 16px 24px; }
+
+.result-toolbar {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 12px;
+}
+
+td a {
+  color: #0b57d0;
+  text-decoration: underline;
+  word-break: break-all;
+}
 .hero {
   display: grid;
   gap: 16px;
