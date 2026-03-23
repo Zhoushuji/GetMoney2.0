@@ -163,6 +163,16 @@ postgres_db_psql() {
   sudo -u postgres bash -lc "cd /tmp && psql -v ON_ERROR_STOP=1 -d '$database' -tc $escaped_sql"
 }
 
+postgres_apply_sql_file() {
+  local database="$1"
+  local sql_file="$2"
+  if [[ ! -r "$sql_file" ]]; then
+    error "SQL 文件不可读: $sql_file"
+    exit 1
+  fi
+  cat "$sql_file" | sudo -u postgres bash -lc "cd /tmp && psql -v ON_ERROR_STOP=1 -d '$database' -f -"
+}
+
 wait_for_port() {
   local name="$1" host="$2" port="$3" max_wait="${4:-60}"
   local elapsed=0
@@ -329,7 +339,7 @@ else
   info "创建数据库 ${POSTGRES_DB_VAL}"
   postgres_exec "createdb -O '${POSTGRES_USER_VAL}' '${POSTGRES_DB_VAL}'"
 fi
-postgres_exec "psql -v ON_ERROR_STOP=1 -d '${POSTGRES_DB_VAL}' -f '${POSTGRES_INIT_SQL}'"
+postgres_apply_sql_file "$POSTGRES_DB_VAL" "$POSTGRES_INIT_SQL"
 postgres_db_psql "$POSTGRES_DB_VAL" "ALTER SCHEMA public OWNER TO ${POSTGRES_USER_VAL};"
 postgres_db_psql "$POSTGRES_DB_VAL" "GRANT ALL PRIVILEGES ON SCHEMA public TO ${POSTGRES_USER_VAL};"
 success "PostgreSQL 初始化完成"
