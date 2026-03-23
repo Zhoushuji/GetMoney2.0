@@ -20,7 +20,7 @@ class Settings(BaseSettings):
     serper_api_key: str = ""
     bing_api_key: str = ""
     backend_cors_origins: list[str] = Field(default_factory=lambda: ["http://localhost", "http://127.0.0.1", "http://localhost:3000", "http://127.0.0.1:3000"])
-    proxy_list: str = ""
+    proxy_list: list[str] = Field(default_factory=list)
     proxy_api_url: str = ""
     enable_proxy: bool = False
     enable_robots_check: bool = True
@@ -30,14 +30,14 @@ class Settings(BaseSettings):
     request_delay_min: int = 2
     request_delay_max: int = 5
 
-    @field_validator("backend_cors_origins", mode="before")
+    @field_validator("backend_cors_origins", "proxy_list", mode="before")
     @classmethod
-    def parse_backend_cors_origins(cls, value: str | list[str]) -> list[str]:
+    def parse_csv_list_settings(cls, value: str | list[str]) -> list[str]:
         if isinstance(value, list):
             return value
         if isinstance(value, str):
             return [item.strip() for item in value.split(",") if item.strip()]
-        return ["http://localhost", "http://127.0.0.1", "http://localhost:3000", "http://127.0.0.1:3000"]
+        return []
 
 
 @lru_cache
