@@ -24,6 +24,8 @@ def upgrade() -> None:
         sa.Column('params', sa.JSON(), nullable=True),
         sa.Column('progress', sa.Integer(), nullable=False, server_default='0'),
         sa.Column('total', sa.Integer(), nullable=False, server_default='0'),
+        sa.Column('target_count', sa.Integer(), nullable=True),
+        sa.Column('confirmed_leads', sa.Integer(), nullable=False, server_default='0'),
         sa.Column('created_at', sa.DateTime(timezone=True), server_default=sa.text('now()'), nullable=False),
         sa.Column('updated_at', sa.DateTime(timezone=True), server_default=sa.text('now()'), nullable=False),
     )

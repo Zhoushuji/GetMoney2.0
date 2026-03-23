@@ -29,7 +29,6 @@ async def enrich_contacts(payload: ContactEnrichRequest) -> TaskCreateResponse:
                 phone="+1 202-555-0182",
                 whatsapp="+1 202-555-0182",
                 potential_contacts={"alternate_email": "alex@example.com"},
-                confidence=0.86,
                 source_urls=["https://example.com/about", "https://linkedin.com/in/alex-morgan"],
                 verified_at=now,
             )

@@ -24,7 +24,6 @@ class ContactRead(BaseModel):
     phone: str | None = None
     whatsapp: str | None = None
     potential_contacts: dict | None = None
-    confidence: float
     source_urls: list[str] | None = None
     verified_at: datetime | None = None
 

@@ -9,7 +9,7 @@ class LeadSearchRequest(BaseModel):
     continents: list[str] = []
     countries: list[str] = []
     languages: list[str] = []
-    channels: list[str] = ["google", "bing", "facebook", "linkedin", "yellowpages"]
+    target_count: int | None = Field(default=None, ge=1)
 
 
 class LeadRead(BaseModel):
@@ -23,6 +23,12 @@ class LeadRead(BaseModel):
     continent: str | None = None
     source: str | None = None
     contact_status: str
+    contact_name: str | None = None
+    contact_title: str | None = None
+    personal_email: str | None = None
+    work_email: str | None = None
+    phone: str | None = None
+    whatsapp: str | None = None
     raw_data: dict | None = None
     created_at: datetime
 

@@ -7,7 +7,7 @@ export function ContactIntelligencePage() {
         <div className="kpi-grid">
           <div className="kpi-card"><strong>P1-P4</strong><p>职位优先级</p></div>
           <div className="kpi-card"><strong>Email / Phone / WA</strong><p>联系方式提取</p></div>
-          <div className="kpi-card"><strong>0-1</strong><p>置信度评分</p></div>
+          <div className="kpi-card"><strong>API Clean</strong><p>前端不展示内部评分</p></div>
         </div>
       </section>
       <section className="panel">
