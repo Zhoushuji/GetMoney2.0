@@ -51,7 +51,9 @@ export function LeadDiscoveryPage() {
           <div className="kpi-card"><strong>3s</strong><p>任务轮询周期</p></div>
         </div>
       </section>
-      <LeadSearchForm onSubmit={async (payload) => searchMutation.mutateAsync(payload)} />
+      <LeadSearchForm onSubmit={async (payload) => {
+        await searchMutation.mutateAsync(payload);
+      }} />
       <TaskProgressCard status={statusQuery.data?.status ?? 'idle'} progress={statusQuery.data?.progress ?? 0} total={statusQuery.data?.total ?? 0} completed={statusQuery.data?.completed ?? 0} />
       <LeadTable rows={rows} />
     </>
