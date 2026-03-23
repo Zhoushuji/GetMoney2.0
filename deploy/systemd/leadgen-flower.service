@@ -1,0 +1,18 @@
+[Unit]
+Description=LeadGen Flower Monitor
+After=network.target redis.service leadgen-worker.service
+Wants=redis.service leadgen-worker.service
+
+[Service]
+Type=simple
+User=__DEPLOY_USER__
+WorkingDirectory=__SCRIPT_DIR__/backend
+EnvironmentFile=__ENV_FILE__
+ExecStart=__VENV_DIR__/bin/celery -A app.workers.celery_app.celery_app flower --port=5555 --basic_auth=${FLOWER_USER}:${FLOWER_PASSWORD}
+Restart=always
+RestartSec=5
+StandardOutput=append:__LOG_DIR__/flower.log
+StandardError=append:__LOG_DIR__/flower.log
+
+[Install]
+WantedBy=multi-user.target
