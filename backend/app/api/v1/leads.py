@@ -11,7 +11,6 @@ from openpyxl import Workbook
 from app.schemas.contact import ContactRead
 from app.schemas.lead import LeadListResponse, LeadRead, LeadSearchRequest
 from app.schemas.task import TaskCreateResponse, TaskStatusResponse
-from app.services.search.bing import BingClient
 from app.services.search.serper import SerperClient
 
 router = APIRouter(prefix="/leads", tags=["leads"])
@@ -20,7 +19,7 @@ OVERSEARCH_MULTIPLIER = 1.5
 TASKS: dict[str, dict] = {}
 LEADS: dict[str, list[LeadRead]] = {}
 CONTACTS: dict[str, list[ContactRead]] = {}
-CHANNEL_POOL = ["google", "bing", "facebook", "linkedin", "yellowpages"]
+CHANNEL_POOL = ["google", "facebook", "linkedin", "yellowpages"]
 IGNORED_HOSTS = {"example.com", "example.org", "example.net", "linkedin.com", "www.linkedin.com", "facebook.com", "www.facebook.com"}
 
 
@@ -44,7 +43,6 @@ def _normalize_company_name(title: str | None, host: str) -> str:
 
 async def _fetch_search_results(payload: LeadSearchRequest) -> list[dict]:
     serper_client = SerperClient()
-    bing_client = BingClient()
     target = payload.target_count or 10
     max_results = max(1, math.ceil(target * OVERSEARCH_MULTIPLIER))
     countries = payload.countries or [""]
@@ -85,12 +83,6 @@ async def _fetch_search_results(payload: LeadSearchRequest) -> list[dict]:
         serper_data = await serper_client.search(query=query, hl=language, num=max_results)
         for item in serper_data.get("organic", []):
             await add_result(item.get("link"), item.get("title"), item.get("snippet"), "google", country)
-            if should_stop(len(collected), payload.target_count) or len(collected) >= max_results:
-                return collected
-
-        bing_data = await bing_client.search(query=query, market="en-US", count=max_results)
-        for item in bing_data.get("webPages", {}).get("value", []):
-            await add_result(item.get("url"), item.get("name"), item.get("snippet"), "bing", country)
             if should_stop(len(collected), payload.target_count) or len(collected) >= max_results:
                 return collected
 

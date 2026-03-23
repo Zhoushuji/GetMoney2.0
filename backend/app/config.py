@@ -18,7 +18,6 @@ class Settings(BaseSettings):
     database_url: str = "postgresql+asyncpg://postgres:postgres_secret_change_me@127.0.0.1:5432/leadgen"
     redis_url: str = "redis://127.0.0.1:6379/0"
     serper_api_key: str = ""
-    bing_api_key: str = ""
     backend_cors_origins: list[str] = Field(default_factory=lambda: ["http://localhost", "http://127.0.0.1", "http://localhost:3000", "http://127.0.0.1:3000"])
     proxy_list: list[str] = Field(default_factory=list)
     proxy_api_url: str = ""
