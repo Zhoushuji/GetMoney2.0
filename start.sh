@@ -131,6 +131,38 @@ postgres_exec() {
   sudo -u postgres bash -lc "cd /tmp && $command"
 }
 
+require_env_value() {
+  local key="$1"
+  local value="$2"
+  if [[ -z "$value" ]]; then
+    error "环境变量 ${key} 未配置，无法继续执行 PostgreSQL 初始化"
+    exit 1
+  fi
+}
+
+require_pg_identifier() {
+  local key="$1"
+  local value="$2"
+  if [[ ! "$value" =~ ^[A-Za-z_][A-Za-z0-9_]*$ ]]; then
+    error "${key}=${value} 不是安全的 PostgreSQL 标识符；仅允许字母、数字和下划线，且不能以数字开头"
+    exit 1
+  fi
+}
+
+escape_pg_literal() {
+  local value="$1"
+  value=${value//\'/\'\'}
+  printf '%s' "$value"
+}
+
+postgres_db_psql() {
+  local database="$1"
+  local sql="$2"
+  local escaped_sql
+  printf -v escaped_sql '%q' "$sql"
+  sudo -u postgres bash -lc "cd /tmp && psql -v ON_ERROR_STOP=1 -d '$database' -tc $escaped_sql"
+}
+
 wait_for_port() {
   local name="$1" host="$2" port="$3" max_wait="${4:-60}"
   local elapsed=0
@@ -275,11 +307,31 @@ section "阶段 8 — 初始化 PostgreSQL（角色 / 数据库 / 扩展）"
 POSTGRES_USER_VAL="$(get_env POSTGRES_USER)"
 POSTGRES_PASSWORD_VAL="$(get_env POSTGRES_PASSWORD)"
 POSTGRES_DB_VAL="$(get_env POSTGRES_DB)"
+require_env_value "POSTGRES_USER" "$POSTGRES_USER_VAL"
+require_env_value "POSTGRES_PASSWORD" "$POSTGRES_PASSWORD_VAL"
+require_env_value "POSTGRES_DB" "$POSTGRES_DB_VAL"
+require_pg_identifier "POSTGRES_USER" "$POSTGRES_USER_VAL"
+require_pg_identifier "POSTGRES_DB" "$POSTGRES_DB_VAL"
+POSTGRES_PASSWORD_ESCAPED="$(escape_pg_literal "$POSTGRES_PASSWORD_VAL")"
 wait_for_port "PostgreSQL" "127.0.0.1" "5432" 90
 POSTGRES_INIT_SQL="$SCRIPT_DIR/deploy/postgres/init.sql"
-postgres_psql "SELECT 1 FROM pg_roles WHERE rolname='${POSTGRES_USER_VAL}'" | grep -q 1 || sudo -u postgres bash -lc "cd /tmp && psql -v ON_ERROR_STOP=1 -c \"CREATE ROLE ${POSTGRES_USER_VAL} LOGIN PASSWORD '${POSTGRES_PASSWORD_VAL}';\""
-postgres_psql "SELECT 1 FROM pg_database WHERE datname='${POSTGRES_DB_VAL}'" | grep -q 1 || postgres_exec "createdb -O '${POSTGRES_USER_VAL}' '${POSTGRES_DB_VAL}'"
+if postgres_psql "SELECT 1 FROM pg_roles WHERE rolname='${POSTGRES_USER_VAL}'" | grep -q 1; then
+  info "PostgreSQL 角色 ${POSTGRES_USER_VAL} 已存在，刷新密码"
+  postgres_exec "psql -v ON_ERROR_STOP=1 -c \"ALTER ROLE ${POSTGRES_USER_VAL} WITH LOGIN PASSWORD '${POSTGRES_PASSWORD_ESCAPED}';\""
+else
+  info "创建 PostgreSQL 角色 ${POSTGRES_USER_VAL}"
+  postgres_exec "psql -v ON_ERROR_STOP=1 -c \"CREATE ROLE ${POSTGRES_USER_VAL} WITH LOGIN PASSWORD '${POSTGRES_PASSWORD_ESCAPED}';\""
+fi
+if postgres_psql "SELECT 1 FROM pg_database WHERE datname='${POSTGRES_DB_VAL}'" | grep -q 1; then
+  info "数据库 ${POSTGRES_DB_VAL} 已存在，校正 owner"
+  postgres_exec "psql -v ON_ERROR_STOP=1 -c \"ALTER DATABASE ${POSTGRES_DB_VAL} OWNER TO ${POSTGRES_USER_VAL};\""
+else
+  info "创建数据库 ${POSTGRES_DB_VAL}"
+  postgres_exec "createdb -O '${POSTGRES_USER_VAL}' '${POSTGRES_DB_VAL}'"
+fi
 postgres_exec "psql -v ON_ERROR_STOP=1 -d '${POSTGRES_DB_VAL}' -f '${POSTGRES_INIT_SQL}'"
+postgres_db_psql "$POSTGRES_DB_VAL" "ALTER SCHEMA public OWNER TO ${POSTGRES_USER_VAL};"
+postgres_db_psql "$POSTGRES_DB_VAL" "GRANT ALL PRIVILEGES ON SCHEMA public TO ${POSTGRES_USER_VAL};"
 success "PostgreSQL 初始化完成"
 
 section "阶段 9 — Redis 加固"
