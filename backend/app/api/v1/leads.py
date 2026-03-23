@@ -78,9 +78,16 @@ def _normalize_company_name(title: str | None, host: str, snippet: str | None) -
     return brand_from_domain
 
 
+async def _safe_serper_search(serper_client: SerperClient, query: str, hl: str, num: int) -> dict:
+    try:
+        return await serper_client.search(query=query, hl=hl, num=num)
+    except Exception:
+        return {"organic": []}
+
+
 async def _find_social_link(serper_client: SerperClient, company_name: str, website: str, site: str) -> str | None:
     host = urlparse(website).netloc.removeprefix("www.")
-    response = await serper_client.search(query=f'site:{site} "{company_name}" "{host}"', hl="en", num=5)
+    response = await _safe_serper_search(serper_client, query=f'site:{site} "{company_name}" "{host}"', hl="en", num=5)
     for item in response.get("organic", []):
         link = item.get("link")
         if link and site in link:
@@ -167,7 +174,7 @@ async def _fetch_search_results(payload: LeadSearchRequest) -> list[dict]:
 
     for query_index, query in enumerate(queries):
         country = countries[query_index] if query_index < len(countries) else None
-        serper_data = await serper_client.search(query=query, hl=language, num=max_results)
+        serper_data = await _safe_serper_search(serper_client, query=query, hl=language, num=max_results)
         for item in serper_data.get("organic", []):
             await add_result(item.get("link"), item.get("title"), item.get("snippet"), "google", country)
             if should_stop(len(collected), payload.target_count) or len(collected) >= max_results:
