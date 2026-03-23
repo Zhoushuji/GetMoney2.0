@@ -389,6 +389,8 @@ if [[ "$OS" == "linux" ]]; then
   sudo mkdir -p /etc/nginx/sites-available /etc/nginx/sites-enabled
   render_template "$SCRIPT_DIR/deploy/nginx/leadgen.conf" /etc/nginx/sites-available/leadgen.conf
   sudo ln -sf /etc/nginx/sites-available/leadgen.conf /etc/nginx/sites-enabled/leadgen.conf
+  sudo rm -f /etc/nginx/sites-enabled/default
+  sudo rm -f /etc/nginx/conf.d/default.conf
   sudo nginx -t
   sudo systemctl reload nginx
   success "Nginx 配置已加载"
