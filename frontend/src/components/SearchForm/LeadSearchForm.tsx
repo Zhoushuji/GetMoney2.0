@@ -81,7 +81,7 @@ export function LeadSearchForm({ isSubmitting, onSubmit }: Props) {
     return {
       product_name: trimmedName,
       continents: selectedContinents,
-      countries: selectedCountries,
+      countries: selectedCountries.map((code) => geoData.find((entry) => entry.code === code)?.name_en ?? code),
       languages: selectedLanguages,
       target_count: targetCount,
     };
