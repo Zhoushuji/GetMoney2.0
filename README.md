@@ -25,7 +25,8 @@ bash start.sh
 - `deploy/nginx/leadgen.conf`：Nginx server 块模板，渲染后写入站点配置
 - `deploy/postgres/init.sql`：初始化 `uuid-ossp` / `pg_trgm` 扩展
 - `backend/.venv/`：后端虚拟环境（运行时创建，不提交）
-- `frontend/dist/`：前端静态构建产物（运行时创建，不提交）
+- `frontend/dist/`：前端静态构建产物（构建中间产物，不直接由 Nginx 指向）
+- `/var/www/leadgen/current`：前端静态站点发布目录，`start.sh` 会将 `frontend/dist/` 同步到这里供 Nginx 服务
 - `logs/`：API / worker / beat / flower / nginx 日志目录
 
 ## 关键能力

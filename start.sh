@@ -20,6 +20,7 @@ BACKEND_DIR="$SCRIPT_DIR/backend"
 FRONTEND_DIR="$SCRIPT_DIR/frontend"
 VENV_DIR="$BACKEND_DIR/.venv"
 LOG_DIR="$SCRIPT_DIR/logs"
+FRONTEND_PUBLISH_DIR="/var/www/leadgen/current"
 ENV_FILE="$SCRIPT_DIR/.env"
 DEPLOY_USER="${SUDO_USER:-$USER}"
 SERVER_NAME="_"
@@ -109,7 +110,7 @@ render_template() {
     -e "s|__DEPLOY_USER__|$DEPLOY_USER|g" \
     -e "s|__LOG_DIR__|$LOG_DIR|g" \
     -e "s|__ENV_FILE__|$ENV_FILE|g" \
-    -e "s|__FRONTEND_DIST_DIR__|$FRONTEND_DIR/dist|g" \
+    -e "s|__FRONTEND_DIST_DIR__|$FRONTEND_PUBLISH_DIR|g" \
     -e "s|__SERVER_NAME__|$SERVER_NAME|g" \
     "$src" | sudo tee "$dest" >/dev/null
 }
@@ -375,7 +376,16 @@ section "阶段 11 — 构建前端静态资源"
 cd "$FRONTEND_DIR"
 npm install
 npm run build
-success "前端静态构建完成：$FRONTEND_DIR/dist"
+if [[ "$OS" == "linux" ]]; then
+  sudo install -d -m 755 "$FRONTEND_PUBLISH_DIR"
+  sudo find "$FRONTEND_PUBLISH_DIR" -mindepth 1 -delete
+  sudo cp -a "$FRONTEND_DIR/dist/." "$FRONTEND_PUBLISH_DIR/"
+  sudo find "$FRONTEND_PUBLISH_DIR" -type d -exec chmod 755 {} \;
+  sudo find "$FRONTEND_PUBLISH_DIR" -type f -exec chmod 644 {} \;
+  success "前端静态构建完成并发布到：$FRONTEND_PUBLISH_DIR"
+else
+  success "前端静态构建完成：$FRONTEND_DIR/dist"
+fi
 
 section "阶段 12 — 执行数据库迁移"
 cd "$BACKEND_DIR"
