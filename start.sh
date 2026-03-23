@@ -119,6 +119,18 @@ get_env() {
   grep -E "^${key}=" "$ENV_FILE" | head -n1 | cut -d= -f2-
 }
 
+postgres_psql() {
+  local sql="$1"
+  local escaped_sql
+  printf -v escaped_sql '%q' "$sql"
+  sudo -u postgres bash -lc "cd /tmp && psql -v ON_ERROR_STOP=1 -tc $escaped_sql"
+}
+
+postgres_exec() {
+  local command="$1"
+  sudo -u postgres bash -lc "cd /tmp && $command"
+}
+
 wait_for_port() {
   local name="$1" host="$2" port="$3" max_wait="${4:-60}"
   local elapsed=0
@@ -264,9 +276,10 @@ POSTGRES_USER_VAL="$(get_env POSTGRES_USER)"
 POSTGRES_PASSWORD_VAL="$(get_env POSTGRES_PASSWORD)"
 POSTGRES_DB_VAL="$(get_env POSTGRES_DB)"
 wait_for_port "PostgreSQL" "127.0.0.1" "5432" 90
-sudo -u postgres psql -tc "SELECT 1 FROM pg_roles WHERE rolname='${POSTGRES_USER_VAL}'" | grep -q 1 || sudo -u postgres psql -c "CREATE ROLE ${POSTGRES_USER_VAL} LOGIN PASSWORD '${POSTGRES_PASSWORD_VAL}';"
-sudo -u postgres psql -tc "SELECT 1 FROM pg_database WHERE datname='${POSTGRES_DB_VAL}'" | grep -q 1 || sudo -u postgres createdb -O "${POSTGRES_USER_VAL}" "${POSTGRES_DB_VAL}"
-sudo -u postgres psql -d "${POSTGRES_DB_VAL}" -f deploy/postgres/init.sql
+POSTGRES_INIT_SQL="$SCRIPT_DIR/deploy/postgres/init.sql"
+postgres_psql "SELECT 1 FROM pg_roles WHERE rolname='${POSTGRES_USER_VAL}'" | grep -q 1 || sudo -u postgres bash -lc "cd /tmp && psql -v ON_ERROR_STOP=1 -c \"CREATE ROLE ${POSTGRES_USER_VAL} LOGIN PASSWORD '${POSTGRES_PASSWORD_VAL}';\""
+postgres_psql "SELECT 1 FROM pg_database WHERE datname='${POSTGRES_DB_VAL}'" | grep -q 1 || postgres_exec "createdb -O '${POSTGRES_USER_VAL}' '${POSTGRES_DB_VAL}'"
+postgres_exec "psql -v ON_ERROR_STOP=1 -d '${POSTGRES_DB_VAL}' -f '${POSTGRES_INIT_SQL}'"
 success "PostgreSQL 初始化完成"
 
 section "阶段 9 — Redis 加固"

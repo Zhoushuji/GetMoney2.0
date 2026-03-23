@@ -13,7 +13,7 @@ migrate: ## 执行数据库迁移
 	cd backend && . .venv/bin/activate && alembic upgrade head
 
 shell-db: ## 进入 PostgreSQL
-	sudo -u postgres psql -d $$(grep '^POSTGRES_DB=' .env | cut -d= -f2)
+	sudo -u postgres bash -lc "cd /tmp && psql -d $$(grep '^POSTGRES_DB=' .env | cut -d= -f2)"
 
 logs: ## 查看应用日志
 	tail -f logs/api.log logs/worker.log logs/beat.log logs/flower.log
