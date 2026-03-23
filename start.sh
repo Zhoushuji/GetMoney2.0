@@ -205,6 +205,41 @@ wait_for_http() {
   success "${name} 已响应"
 }
 
+wait_for_flower() {
+  local url="$1" max_wait="${2:-120}"
+  local user="$3" password="$4"
+  local elapsed=0
+  local http_code=""
+  info "等待 Flower (${url}) 响应..."
+
+  while true; do
+    if [[ -n "$user" && -n "$password" ]]; then
+      http_code="$(curl -sS -o /dev/null -w '%{http_code}' --user "${user}:${password}" "$url" || true)"
+    else
+      http_code="$(curl -sS -o /dev/null -w '%{http_code}' "$url" || true)"
+    fi
+
+    case "$http_code" in
+      2*|3*|401|403)
+        success "Flower 已响应（HTTP ${http_code}）"
+        return 0
+        ;;
+    esac
+
+    if (echo >/dev/tcp/127.0.0.1/5555) >/dev/null 2>&1; then
+      warn "Flower 端口已监听，但 HTTP 探针尚未返回成功状态（最近状态码: ${http_code:-none}）；按已就绪继续"
+      return 0
+    fi
+
+    sleep 3
+    elapsed=$((elapsed+3))
+    if [[ $elapsed -ge $max_wait ]]; then
+      error "Flower 在 ${max_wait}s 内未响应"
+      exit 1
+    fi
+  done
+}
+
 section "阶段 0 — 检测操作系统"
 info "OS=${OS} PKG_MGR=${PKG_MGR:-none}"
 require_sudo
@@ -428,12 +463,7 @@ wait_for_http "后端 API" "http://127.0.0.1:8000/health" 120
 wait_for_http "前端页面" "http://127.0.0.1" 120
 FLOWER_USER_VAL="$(get_env FLOWER_USER)"
 FLOWER_PASSWORD_VAL="$(get_env FLOWER_PASSWORD)"
-if [[ -n "$FLOWER_USER_VAL" && -n "$FLOWER_PASSWORD_VAL" ]]; then
-  wait_for_http "Flower" "http://127.0.0.1:5555" 120 --user "${FLOWER_USER_VAL}:${FLOWER_PASSWORD_VAL}"
-else
-  warn "未配置 FLOWER_USER/FLOWER_PASSWORD，回退为端口就绪检查"
-  wait_for_port "Flower" "127.0.0.1" "5555" 120
-fi
+wait_for_flower "http://127.0.0.1:5555" 120 "$FLOWER_USER_VAL" "$FLOWER_PASSWORD_VAL"
 
 section "阶段 16 — 系统就绪"
 echo ""
