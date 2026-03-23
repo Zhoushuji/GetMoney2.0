@@ -1,4 +1,5 @@
 import math
+import re
 from datetime import datetime, timezone
 from io import BytesIO, StringIO
 from urllib.parse import urlparse
@@ -21,6 +22,11 @@ LEADS: dict[str, list[LeadRead]] = {}
 CONTACTS: dict[str, list[ContactRead]] = {}
 CHANNEL_POOL = ["google", "facebook", "linkedin", "yellowpages"]
 IGNORED_HOSTS = {"example.com", "example.org", "example.net", "linkedin.com", "www.linkedin.com", "facebook.com", "www.facebook.com"}
+GENERIC_TITLE_PATTERNS = [
+    re.compile(r"\b(home|official site|welcome)\b", re.I),
+    re.compile(r"\b(supplier|suppliers|manufacturer|manufacturers|factory|industrial|tools|power tools|valves?)\b", re.I),
+    re.compile(r"\bin\s+[A-Z][a-z]+", re.I),
+]
 
 
 def should_stop(confirmed_count: int, target: int | None) -> bool:
@@ -29,16 +35,48 @@ def should_stop(confirmed_count: int, target: int | None) -> bool:
     return confirmed_count >= target
 
 
-def _normalize_company_name(title: str | None, host: str) -> str:
-    if title:
-        for separator in ["|", "-", "–", "—"]:
-            if separator in title:
-                title = title.split(separator)[0].strip()
-                break
-        if title:
-            return title
+def _domain_brand(host: str) -> str:
     domain = host.removeprefix("www.")
-    return domain.split(".")[0].replace("-", " ").title()
+    label = domain.split(".")[0]
+    label = re.sub(r"[-_]+", " ", label)
+    return re.sub(r"\s+", " ", label).strip().title()
+
+
+def _is_generic_title(candidate: str) -> bool:
+    normalized = candidate.strip()
+    return any(pattern.search(normalized) for pattern in GENERIC_TITLE_PATTERNS)
+
+
+def _normalize_company_name(title: str | None, host: str, snippet: str | None) -> str:
+    brand_from_domain = _domain_brand(host)
+    candidates: list[str] = []
+    for raw in [title or "", snippet or ""]:
+        parts = [part.strip() for part in re.split(r"\||-|–|—|:", raw) if part.strip()]
+        candidates.extend(parts)
+
+    for candidate in candidates:
+        if candidate.lower() == "home":
+            continue
+        if len(candidate) < 3:
+            continue
+        if not _is_generic_title(candidate):
+            return candidate
+
+    for candidate in candidates:
+        if candidate.lower() != "home" and len(candidate) >= 3:
+            return candidate
+
+    return brand_from_domain
+
+
+async def _find_social_link(serper_client: SerperClient, company_name: str, website: str, site: str) -> str | None:
+    host = urlparse(website).netloc.removeprefix("www.")
+    response = await serper_client.search(query=f'site:{site} "{company_name}" "{host}"', hl="en", num=5)
+    for item in response.get("organic", []):
+        link = item.get("link")
+        if link and site in link:
+            return link
+    return None
 
 
 async def _fetch_search_results(payload: LeadSearchRequest) -> list[dict]:
@@ -46,7 +84,7 @@ async def _fetch_search_results(payload: LeadSearchRequest) -> list[dict]:
     target = payload.target_count or 10
     max_results = max(1, math.ceil(target * OVERSEARCH_MULTIPLIER))
     countries = payload.countries or [""]
-    queries = [f"{payload.product_name} supplier {country}".strip() for country in countries[:3]]
+    queries = [f"{payload.product_name} supplier in {country}".strip() for country in countries[:3]]
     language = payload.languages[0] if payload.languages else "en"
 
     collected: list[dict] = []
@@ -59,12 +97,16 @@ async def _fetch_search_results(payload: LeadSearchRequest) -> list[dict]:
         host = parsed.netloc.lower()
         if not host or host in seen_hosts or host in IGNORED_HOSTS:
             return
+        company_name = _normalize_company_name(title, host, snippet)
+        website = f"{parsed.scheme or 'https'}://{host}"
         seen_hosts.add(host)
+        facebook_url = await _find_social_link(serper_client, company_name, website, "facebook.com")
+        linkedin_url = await _find_social_link(serper_client, company_name, website, "linkedin.com")
         collected.append({
-            "company_name": _normalize_company_name(title, host),
-            "website": f"{parsed.scheme or 'https'}://{host}",
-            "facebook_url": url if "facebook.com" in host else None,
-            "linkedin_url": url if "linkedin.com" in host else None,
+            "company_name": company_name,
+            "website": website,
+            "facebook_url": facebook_url,
+            "linkedin_url": linkedin_url,
             "country": country,
             "continent": payload.continents[0] if payload.continents else None,
             "source": source,
@@ -75,7 +117,7 @@ async def _fetch_search_results(payload: LeadSearchRequest) -> list[dict]:
             "work_email": None,
             "phone": None,
             "whatsapp": None,
-            "raw_data": {"snippet": snippet, "source": source},
+            "raw_data": {"title": title, "snippet": snippet, "source": source},
         })
 
     for query_index, query in enumerate(queries):
