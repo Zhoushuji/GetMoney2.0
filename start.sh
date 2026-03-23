@@ -190,9 +190,10 @@ wait_for_port() {
 
 wait_for_http() {
   local name="$1" url="$2" max_wait="${3:-120}"
+  shift 3 || true
   local elapsed=0
   info "等待 ${name} (${url}) 响应..."
-  while ! curl -sf "$url" >/dev/null 2>&1; do
+  while ! curl -fsS "$@" "$url" >/dev/null 2>&1; do
     sleep 3
     elapsed=$((elapsed+3))
     if [[ $elapsed -ge $max_wait ]]; then
@@ -413,7 +414,14 @@ fi
 section "阶段 15 — 健康检查"
 wait_for_http "后端 API" "http://127.0.0.1:8000/health" 120
 wait_for_http "前端页面" "http://127.0.0.1" 120
-wait_for_http "Flower" "http://127.0.0.1:5555" 120
+FLOWER_USER_VAL="$(get_env FLOWER_USER)"
+FLOWER_PASSWORD_VAL="$(get_env FLOWER_PASSWORD)"
+if [[ -n "$FLOWER_USER_VAL" && -n "$FLOWER_PASSWORD_VAL" ]]; then
+  wait_for_http "Flower" "http://127.0.0.1:5555" 120 --user "${FLOWER_USER_VAL}:${FLOWER_PASSWORD_VAL}"
+else
+  warn "未配置 FLOWER_USER/FLOWER_PASSWORD，回退为端口就绪检查"
+  wait_for_port "Flower" "127.0.0.1" "5555" 120
+fi
 
 section "阶段 16 — 系统就绪"
 echo ""
