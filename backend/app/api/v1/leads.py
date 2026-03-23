@@ -1,7 +1,7 @@
-import asyncio
 import math
 from datetime import datetime, timezone
 from io import BytesIO, StringIO
+from urllib.parse import urlparse
 from uuid import UUID, uuid4
 
 from fastapi import APIRouter, Query
@@ -11,6 +11,8 @@ from openpyxl import Workbook
 from app.schemas.contact import ContactRead
 from app.schemas.lead import LeadListResponse, LeadRead, LeadSearchRequest
 from app.schemas.task import TaskCreateResponse, TaskStatusResponse
+from app.services.search.bing import BingClient
+from app.services.search.serper import SerperClient
 
 router = APIRouter(prefix="/leads", tags=["leads"])
 OVERSEARCH_MULTIPLIER = 1.5
@@ -18,8 +20,8 @@ OVERSEARCH_MULTIPLIER = 1.5
 TASKS: dict[str, dict] = {}
 LEADS: dict[str, list[LeadRead]] = {}
 CONTACTS: dict[str, list[ContactRead]] = {}
-
 CHANNEL_POOL = ["google", "bing", "facebook", "linkedin", "yellowpages"]
+IGNORED_HOSTS = {"example.com", "example.org", "example.net", "linkedin.com", "www.linkedin.com", "facebook.com", "www.facebook.com"}
 
 
 def should_stop(confirmed_count: int, target: int | None) -> bool:
@@ -28,70 +30,89 @@ def should_stop(confirmed_count: int, target: int | None) -> bool:
     return confirmed_count >= target
 
 
-def _lead_templates(product_name: str, countries: list[str], continents: list[str]) -> list[dict]:
-    fallback_countries = countries or ["US", "DE", "JP", "BR", "ZA"]
-    fallback_continent = continents[0] if continents else "Global"
-    templates = []
-    for index, country in enumerate(fallback_countries[:5], start=1):
-        templates.append({
-            "company_name": f"{product_name.title()} Prospect {index}",
-            "website": f"https://example{index}.com",
-            "facebook_url": f"https://facebook.com/example{index}" if index % 2 else None,
-            "linkedin_url": f"https://linkedin.com/company/example-{index}",
+def _normalize_company_name(title: str | None, host: str) -> str:
+    if title:
+        for separator in ["|", "-", "–", "—"]:
+            if separator in title:
+                title = title.split(separator)[0].strip()
+                break
+        if title:
+            return title
+    domain = host.removeprefix("www.")
+    return domain.split(".")[0].replace("-", " ").title()
+
+
+async def _fetch_search_results(payload: LeadSearchRequest) -> list[dict]:
+    serper_client = SerperClient()
+    bing_client = BingClient()
+    target = payload.target_count or 10
+    max_results = max(1, math.ceil(target * OVERSEARCH_MULTIPLIER))
+    countries = payload.countries or [""]
+    queries = [f"{payload.product_name} supplier {country}".strip() for country in countries[:3]]
+    language = payload.languages[0] if payload.languages else "en"
+
+    collected: list[dict] = []
+    seen_hosts: set[str] = set()
+
+    async def add_result(url: str | None, title: str | None, snippet: str | None, source: str, country: str | None) -> None:
+        if not url:
+            return
+        parsed = urlparse(url)
+        host = parsed.netloc.lower()
+        if not host or host in seen_hosts or host in IGNORED_HOSTS:
+            return
+        seen_hosts.add(host)
+        collected.append({
+            "company_name": _normalize_company_name(title, host),
+            "website": f"{parsed.scheme or 'https'}://{host}",
+            "facebook_url": url if "facebook.com" in host else None,
+            "linkedin_url": url if "linkedin.com" in host else None,
             "country": country,
-            "continent": fallback_continent,
-            "source": CHANNEL_POOL[(index - 1) % len(CHANNEL_POOL)],
-            "contact_status": "completed" if index <= 2 else "pending",
-            "contact_name": ["Alex Morgan", "Jamie Chen", "Taylor Singh", None, None][index - 1],
-            "contact_title": ["Managing Director", "Procurement Manager", "General Manager", None, None][index - 1],
-            "personal_email": ["alex@example.com", None, None, None, None][index - 1],
-            "work_email": ["amorgan@example.com", "jamie.chen@example.com", None, None, None][index - 1],
-            "phone": ["+1 202-555-0101", "+49 30-123456", None, None, None][index - 1],
-            "whatsapp": ["+1 202-555-0101", None, None, None, None][index - 1],
+            "continent": payload.continents[0] if payload.continents else None,
+            "source": source,
+            "contact_status": "pending",
+            "contact_name": None,
+            "contact_title": None,
+            "personal_email": None,
+            "work_email": None,
+            "phone": None,
+            "whatsapp": None,
+            "raw_data": {"snippet": snippet, "source": source},
         })
-    return templates
+
+    for query_index, query in enumerate(queries):
+        country = countries[query_index] if query_index < len(countries) else None
+        serper_data = await serper_client.search(query=query, hl=language, num=max_results)
+        for item in serper_data.get("organic", []):
+            await add_result(item.get("link"), item.get("title"), item.get("snippet"), "google", country)
+            if should_stop(len(collected), payload.target_count) or len(collected) >= max_results:
+                return collected
+
+        bing_data = await bing_client.search(query=query, market="en-US", count=max_results)
+        for item in bing_data.get("webPages", {}).get("value", []):
+            await add_result(item.get("url"), item.get("name"), item.get("snippet"), "bing", country)
+            if should_stop(len(collected), payload.target_count) or len(collected) >= max_results:
+                return collected
+
+    return collected
 
 
 def build_task_status(task: dict) -> TaskStatusResponse:
     now = datetime.now(timezone.utc)
-    elapsed = max(int((now - task["created_at"]).total_seconds()), 0)
-    total = max(task["total"], 1)
-    completed = min(total, max(1, elapsed // 2 + 1))
-    confirmed_goal = task["target_count"] if task["target_count"] is not None else task["final_confirmed_leads"]
-    confirmed_leads = min(task["final_confirmed_leads"], max(0, round(completed / total * confirmed_goal)))
-    stopped_early = should_stop(confirmed_leads, task["target_count"])
-
-    if stopped_early:
-        status = "stopped_early"
-        completed = min(completed, task["total"])
-        progress = 100
-    elif completed >= total:
-        status = "completed"
-        confirmed_leads = task["final_confirmed_leads"]
-        progress = 100
-    else:
-        status = "running"
-        progress = min(99, int(completed / total * 100))
-
-    remaining = 0 if status in {"completed", "stopped_early"} else max(total * 2 - elapsed, 0)
-    task.update({
-        "status": status,
-        "progress": progress,
-        "completed": completed,
-        "confirmed_leads": confirmed_leads,
-        "stopped_early": stopped_early,
-        "updated_at": now,
-    })
+    stopped_early = should_stop(task["confirmed_leads"], task["target_count"])
+    status = "stopped_early" if stopped_early else task["status"]
+    progress = 100 if status in {"completed", "stopped_early"} else task["progress"]
+    task.update({"status": status, "progress": progress, "stopped_early": stopped_early, "updated_at": now})
     return TaskStatusResponse(
         id=task["id"],
         status=status,
         progress=progress,
         total=task["total"],
-        completed=completed,
-        confirmed_leads=confirmed_leads,
+        completed=task["completed"],
+        confirmed_leads=task["confirmed_leads"],
         target_count=task["target_count"],
         stopped_early=stopped_early,
-        estimated_remaining_seconds=remaining,
+        estimated_remaining_seconds=0,
         results_url=f"/api/v1/leads?task_id={task['id']}",
         created_at=task["created_at"],
         updated_at=task["updated_at"],
@@ -102,23 +123,23 @@ def build_task_status(task: dict) -> TaskStatusResponse:
 async def create_lead_search(payload: LeadSearchRequest) -> TaskCreateResponse:
     task_id = uuid4()
     now = datetime.now(timezone.utc)
-    templates = _lead_templates(payload.product_name, payload.countries, payload.continents)
+    results = await _fetch_search_results(payload)
     target_count = payload.target_count
-    total = math.ceil(target_count * OVERSEARCH_MULTIPLIER) if target_count else max(len(templates), 5)
-    final_confirmed = min(len(templates), target_count) if target_count else len(templates)
+    confirmed_leads = len(results) if target_count is None else min(len(results), target_count)
+    total = math.ceil(target_count * OVERSEARCH_MULTIPLIER) if target_count else len(results)
+    total = max(total, confirmed_leads)
 
     TASKS[str(task_id)] = {
         "id": task_id,
-        "status": "running",
-        "progress": 0,
+        "status": "completed",
+        "progress": 100,
         "total": total,
-        "completed": 0,
-        "confirmed_leads": 0,
+        "completed": total,
+        "confirmed_leads": confirmed_leads,
         "target_count": target_count,
-        "stopped_early": False,
+        "stopped_early": should_stop(confirmed_leads, target_count),
         "created_at": now,
         "updated_at": now,
-        "final_confirmed_leads": final_confirmed,
     }
 
     LEADS[str(task_id)] = [
@@ -139,10 +160,10 @@ async def create_lead_search(payload: LeadSearchRequest) -> TaskCreateResponse:
             work_email=item["work_email"],
             phone=item["phone"],
             whatsapp=item["whatsapp"],
-            raw_data={"product_name": payload.product_name, "languages": payload.languages, "channels": CHANNEL_POOL},
+            raw_data=item["raw_data"],
             created_at=now,
         )
-        for item in templates[:final_confirmed]
+        for item in results[:confirmed_leads]
     ]
     return TaskCreateResponse(task_id=task_id)
 
