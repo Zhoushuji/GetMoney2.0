@@ -1,37 +1,15 @@
 from datetime import datetime, timezone
-from urllib.parse import urlparse
 from uuid import UUID, uuid4
 
 from fastapi import APIRouter
 
 from app.api.v1.leads import CONTACTS, LEADS, TASKS
-from app.schemas.contact import ContactEnrichAllRequest, ContactEnrichRequest, ContactListResponse, ContactRead
+from app.schemas.contact import ContactEnrichAllRequest, ContactEnrichRequest, ContactListResponse
 from app.schemas.task import TaskCreateResponse
+from app.services.contact.intelligence import ContactIntelligenceService
 
 router = APIRouter(prefix="/contacts", tags=["contacts"])
-
-
-def _build_contact(lead) -> ContactRead:
-    now = datetime.now(timezone.utc)
-    website_host = urlparse(lead.website or "").netloc.removeprefix("www.")
-    domain = website_host or "example.com"
-    company_tokens = (lead.company_name or "Business Contact").split()
-    person_name = f"{company_tokens[0]} Contact"
-    return ContactRead(
-        id=uuid4(),
-        lead_id=lead.id,
-        person_name=person_name,
-        title="Managing Director",
-        priority=1,
-        personal_email=f"{company_tokens[0].lower()}@gmail.com" if company_tokens else None,
-        work_email=f"contact@{domain}" if domain else None,
-        linkedin_personal_url=f"https://www.linkedin.com/in/{company_tokens[0].lower()}-contact" if company_tokens else None,
-        phone="+971 50 555 0101",
-        whatsapp="+971 50 555 0101",
-        potential_contacts={"assistant": f"hello@{domain}"},
-        source_urls=[lead.website] if lead.website else [],
-        verified_at=now,
-    )
+service = ContactIntelligenceService()
 
 
 @router.post("/enrich", response_model=TaskCreateResponse)
@@ -55,17 +33,18 @@ async def enrich_contacts(payload: ContactEnrichRequest) -> TaskCreateResponse:
         lead = lead_lookup.get(str(lead_id))
         if not lead:
             continue
-        contact = _build_contact(lead)
-        CONTACTS[str(lead_id)] = [contact]
-        lead.contact_status = "done"
-        lead.contact_name = contact.person_name
-        lead.contact_title = contact.title
-        lead.linkedin_personal_url = contact.linkedin_personal_url
-        lead.personal_email = contact.personal_email
-        lead.work_email = contact.work_email
-        lead.phone = contact.phone
-        lead.whatsapp = contact.whatsapp
-        lead.potential_contacts = contact.potential_contacts
+        contacts = await service.find_contacts(lead)
+        CONTACTS[str(lead_id)] = contacts
+        contact = contacts[0] if contacts else None
+        lead.contact_status = "done" if contact else "failed"
+        lead.contact_name = contact.person_name if contact else None
+        lead.contact_title = contact.title if contact else None
+        lead.linkedin_personal_url = contact.linkedin_personal_url if contact else None
+        lead.personal_email = contact.personal_email if contact else None
+        lead.work_email = contact.work_email if contact else None
+        lead.phone = contact.phone if contact else None
+        lead.whatsapp = contact.whatsapp if contact else None
+        lead.potential_contacts = contact.potential_contacts if contact else None
     return TaskCreateResponse(task_id=task_id)
 
 

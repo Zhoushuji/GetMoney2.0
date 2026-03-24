@@ -18,7 +18,7 @@ type TaskStatus = {
   estimated_remaining_seconds?: number | null;
 };
 
-type LeadListResponse = { items: LeadRow[]; total: number };
+type LeadListResponse = { items: LeadRow[]; total: number; page: number; page_size: number };
 
 type ContactResponse = {
   contacts: Array<{
@@ -29,7 +29,7 @@ type ContactResponse = {
     work_email?: string;
     phone?: string;
     whatsapp?: string;
-    potential_contacts?: Record<string, string>;
+    potential_contacts?: { items?: string[] };
   }>;
 };
 
@@ -61,6 +61,8 @@ export function LeadDiscoveryPage() {
   const [rows, setRows] = useState<LeadRow[]>([]);
   const [totalRows, setTotalRows] = useState(0);
   const [selectedIds, setSelectedIds] = useState<string[]>([]);
+  const [page, setPage] = useState(1);
+  const [pageSize, setPageSize] = useState(50);
   const eventSourceRef = useRef<EventSource | null>(null);
   const pollerRef = useRef<number | null>(null);
 
@@ -76,10 +78,12 @@ export function LeadDiscoveryPage() {
     eventSourceRef.current = null;
   };
 
-  const loadResults = async (nextTaskId: string) => {
-    const response = await apiClient.get<LeadListResponse>(`/leads?task_id=${nextTaskId}&page=1&page_size=50`);
+  const loadResults = async (nextTaskId: string, nextPage = page, nextPageSize = pageSize) => {
+    const response = await apiClient.get<LeadListResponse>(`/leads?task_id=${nextTaskId}&page=${nextPage}&page_size=${nextPageSize}`);
     setRows(response.data.items);
     setTotalRows(response.data.total);
+    setPage(response.data.page);
+    setPageSize(response.data.page_size);
   };
 
   const handleTaskUpdate = async (status: TaskStatus) => {
@@ -95,14 +99,13 @@ export function LeadDiscoveryPage() {
       stopPolling();
       closeStream();
       setIsSubmitting(false);
-      await loadResults(status.id);
+      await loadResults(status.id, 1, pageSize);
     }
   };
 
   useEffect(() => {
     if (!taskId) return undefined;
     let fallbackStarted = false;
-
     const startPolling = () => {
       if (fallbackStarted) return;
       fallbackStarted = true;
@@ -112,7 +115,6 @@ export function LeadDiscoveryPage() {
         await handleTaskUpdate(response.data);
       }, 3000);
     };
-
     try {
       const source = new EventSource(`/api/v1/tasks/${taskId}/stream`);
       eventSourceRef.current = source;
@@ -124,12 +126,16 @@ export function LeadDiscoveryPage() {
     } catch {
       startPolling();
     }
-
     return () => {
       closeStream();
       stopPolling();
     };
-  }, [taskId]);
+  }, [taskId, pageSize]);
+
+  useEffect(() => {
+    if (!taskId) return;
+    void loadResults(taskId, page, pageSize);
+  }, [page, pageSize]);
 
   const mergeContact = (leadId: string, contact?: ContactResponse['contacts'][number]) => {
     setRows((current) => current.map((row) => row.id !== leadId ? row : {
@@ -189,7 +195,7 @@ export function LeadDiscoveryPage() {
         <StepCard step="3" title="触达拓展" status="locked" />
       </section>
 
-      <section className="panel section-panel">
+      <section className="section-panel">
         <h2>▼ STEP 1 — 潜在客户发现</h2>
         <LeadSearchForm
           isSubmitting={isSubmitting}
@@ -200,6 +206,7 @@ export function LeadDiscoveryPage() {
               setTotalRows(0);
               setSelectedIds([]);
               setTaskStatus(null);
+              setPage(1);
               const response = await apiClient.post<{ task_id: string }>('/leads/search', payload);
               setTaskId(response.data.task_id);
             } catch {
@@ -226,17 +233,24 @@ export function LeadDiscoveryPage() {
         </div>
       </section>
 
-      <section className="panel section-panel">
+      <section className="section-panel">
         <h2>▼ 统一结果表格（STEP 1 + STEP 2 共用）</h2>
         <LeadTable
           rows={rows}
           selectedIds={selectedIds}
           step2Unlocked={step2Unlocked}
+          page={page}
+          pageSize={pageSize}
+          total={totalRows}
           onToggleRow={(leadId) => setSelectedIds((current) => current.includes(leadId) ? current.filter((id) => id !== leadId) : [...current, leadId])}
           onToggleAll={() => setSelectedIds((current) => current.length === rows.length ? [] : rows.map((row) => row.id))}
           onEnrichOne={(leadId) => runContactQueue([leadId])}
+          onPageChange={(nextPage) => setPage(nextPage)}
+          onPageSizeChange={(nextPageSize) => {
+            setPage(1);
+            setPageSize(nextPageSize);
+          }}
         />
-        {rows.length > 0 ? <div className="results-summary">共找到 {totalRows} 家客户。</div> : null}
       </section>
 
       <section className="panel section-panel step3-card">

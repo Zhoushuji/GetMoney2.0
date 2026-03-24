@@ -18,50 +18,100 @@ type Props = {
 type FormErrors = Partial<Record<'product_name' | 'countries' | 'languages' | 'target_count', string>>;
 
 const ENGLISH_CODE = 'en';
+const CONTINENT_LABELS: Record<string, string> = {
+  Africa: '非洲',
+  Asia: '亚洲',
+  Europe: '欧洲',
+  'North America': '北美洲',
+  'South America': '南美洲',
+  Oceania: '大洋洲',
+};
 
 export function LeadSearchForm({ isSubmitting, onSubmit }: Props) {
   const [productName, setProductName] = useState('industrial valve');
-  const [selectedContinents, setSelectedContinents] = useState<string[]>(['Europe']);
-  const [selectedCountries, setSelectedCountries] = useState<string[]>(['DE']);
-  const [selectedLanguages, setSelectedLanguages] = useState<string[]>([ENGLISH_CODE]);
+  const [selectedContinents, setSelectedContinents] = useState<string[]>(['Asia']);
+  const [selectedCountries, setSelectedCountries] = useState<string[]>(['CN', 'IN']);
+  const [selectedLanguages, setSelectedLanguages] = useState<string[]>([ENGLISH_CODE, 'zh']);
+  const [countrySearch, setCountrySearch] = useState('');
   const [targetCountInput, setTargetCountInput] = useState('');
   const [errors, setErrors] = useState<FormErrors>({});
 
-  const countries = useMemo(
-    () => geoData.filter((entry) => selectedContinents.length === 0 || selectedContinents.includes(entry.continent)),
-    [selectedContinents],
-  );
+  const groupedCountries = useMemo(() => {
+    const groups = selectedContinents.map((continent) => ({
+      continent,
+      items: geoData
+        .filter((entry) => entry.continent === continent)
+        .sort((a, b) => a.name_en.localeCompare(b.name_en))
+        .filter((entry) => {
+          const keyword = countrySearch.trim().toLowerCase();
+          if (!keyword) return true;
+          return `${entry.name_en} ${entry.name_local} ${entry.code}`.toLowerCase().includes(keyword);
+        }),
+    }));
+    return groups.filter((group) => group.items.length > 0);
+  }, [countrySearch, selectedContinents]);
+
+  const visibleCountries = useMemo(() => groupedCountries.flatMap((group) => group.items), [groupedCountries]);
 
   const availableLanguages = useMemo(() => {
     const fromCountries = geoData
       .filter((entry) => selectedCountries.includes(entry.code))
       .flatMap((entry) => entry.languages);
-    const deduped = Array.from(new Set(fromCountries));
-    const withoutEnglish = deduped.filter((language) => language !== ENGLISH_CODE).sort((a, b) => (LANGUAGE_LABELS[a] ?? a).localeCompare(LANGUAGE_LABELS[b] ?? b));
-    return [ENGLISH_CODE, ...withoutEnglish];
+    const deduped = Array.from(new Set([ENGLISH_CODE, ...fromCountries]));
+    return deduped.sort((a, b) => (LANGUAGE_LABELS[a] ?? a).localeCompare(LANGUAGE_LABELS[b] ?? b));
   }, [selectedCountries]);
 
   useEffect(() => {
-    setSelectedCountries((current: string[]) => current.filter((code: string) => countries.some((entry) => entry.code === code)));
-  }, [countries]);
+    const allowedCodes = new Set(selectedContinents.flatMap((continent) => geoData.filter((entry) => entry.continent === continent).map((entry) => entry.code)));
+    setSelectedCountries((current) => current.filter((code) => allowedCodes.has(code)));
+  }, [selectedContinents]);
 
   useEffect(() => {
-    setSelectedLanguages((current: string[]) => current.filter((language: string) => availableLanguages.includes(language)));
+    setSelectedLanguages((current) => {
+      const next = current.filter((language) => availableLanguages.includes(language));
+      return next.length > 0 ? next : [ENGLISH_CODE].filter((language) => availableLanguages.includes(language));
+    });
   }, [availableLanguages]);
+
+  const toggleContinent = (continent: string) => {
+    setSelectedContinents((current) => {
+      if (current.includes(continent)) {
+        const next = current.filter((item) => item !== continent);
+        const continentCountryCodes = new Set(geoData.filter((entry) => entry.continent === continent).map((entry) => entry.code));
+        setSelectedCountries((existing) => existing.filter((code) => !continentCountryCodes.has(code)));
+        return next;
+      }
+      return [...current, continent];
+    });
+  };
+
+  const toggleCountry = (code: string) => {
+    setSelectedCountries((current) => current.includes(code) ? current.filter((item) => item !== code) : [...current, code]);
+  };
+
+  const toggleLanguage = (language: string) => {
+    setSelectedLanguages((current) => current.includes(language) ? current.filter((item) => item !== language) : [...current, language]);
+  };
+
+  const bulkToggleContinent = (continent: string, mode: 'select' | 'clear') => {
+    const codes = geoData.filter((entry) => entry.continent === continent).map((entry) => entry.code);
+    setSelectedCountries((current) => {
+      const next = new Set(current);
+      if (mode === 'select') {
+        codes.forEach((code) => next.add(code));
+      } else {
+        codes.forEach((code) => next.delete(code));
+      }
+      return Array.from(next);
+    });
+  };
 
   const validate = (): LeadSearchPayload | null => {
     const nextErrors: FormErrors = {};
     const trimmedName = productName.trim();
-
-    if (!trimmedName) {
-      nextErrors.product_name = '请输入产品名称';
-    }
-    if (selectedCountries.length === 0) {
-      nextErrors.countries = '请至少选择一个国家';
-    }
-    if (selectedLanguages.length === 0) {
-      nextErrors.languages = '请至少选择一种搜索语言';
-    }
+    if (!trimmedName) nextErrors.product_name = '请输入产品名称';
+    if (selectedCountries.length === 0) nextErrors.countries = '请至少选择一个国家/地区';
+    if (selectedLanguages.length === 0) nextErrors.languages = '请至少选择一种搜索语言';
 
     let targetCount: number | null = null;
     if (targetCountInput.trim()) {
@@ -74,9 +124,7 @@ export function LeadSearchForm({ isSubmitting, onSubmit }: Props) {
     }
 
     setErrors(nextErrors);
-    if (Object.keys(nextErrors).length > 0) {
-      return null;
-    }
+    if (Object.keys(nextErrors).length > 0) return null;
 
     return {
       product_name: trimmedName,
@@ -90,23 +138,17 @@ export function LeadSearchForm({ isSubmitting, onSubmit }: Props) {
   const submit = async (event: FormEvent) => {
     event.preventDefault();
     const payload = validate();
-    if (!payload) {
-      return;
-    }
+    if (!payload) return;
     await onSubmit(payload);
   };
 
-  const toggleLanguage = (language: string) => {
-    setSelectedLanguages((current: string[]) => current.includes(language)
-      ? current.filter((item: string) => item !== language)
-      : [...current, language],
-    );
-  };
-
   return (
-    <form className="panel" onSubmit={submit}>
-      <h2>Lead Discovery</h2>
-      <div className="form-grid">
+    <form className="search-form-stack" onSubmit={submit}>
+      <section className="search-block panel">
+        <div className="block-heading">
+          <h3>区块 A：产品信息</h3>
+          <div className="block-divider" />
+        </div>
         <label className="field">
           <span>产品名称</span>
           <input
@@ -117,77 +159,108 @@ export function LeadSearchForm({ isSubmitting, onSubmit }: Props) {
           />
           {errors.product_name ? <small className="field-error">{errors.product_name}</small> : null}
         </label>
-        <label className="field">
-          <span>大洲</span>
-          <select
-            className="select"
-            multiple
-            value={selectedContinents}
-            onChange={(e) => setSelectedContinents(Array.from(e.target.selectedOptions).map((o) => o.value))}
-          >
-            {CONTINENTS.map((continent) => (
-              <option key={continent} value={continent}>{continent}</option>
-            ))}
-          </select>
-        </label>
-        <label className="field">
-          <span>国家</span>
-          <select
-            className={`select ${errors.countries ? 'input-error' : ''}`}
-            multiple
-            value={selectedCountries}
-            onChange={(e) => setSelectedCountries(Array.from(e.target.selectedOptions).map((o) => o.value))}
-          >
-            {countries.map((entry) => (
-              <option key={entry.code} value={entry.code}>{entry.name_en} ({entry.code})</option>
-            ))}
-          </select>
-          {errors.countries ? <small className="field-error">{errors.countries}</small> : <small className="field-help">按住 Ctrl / Command 可多选。</small>}
-        </label>
-        <label className="field">
-          <span>目标客户数量（可选）</span>
-          <input
-            className={`input ${errors.target_count ? 'input-error' : ''}`}
-            type="number"
-            min={1}
-            step={1}
-            inputMode="numeric"
-            value={targetCountInput}
-            onChange={(e) => setTargetCountInput(e.target.value)}
-            placeholder="留空 = 搜索全部"
-          />
-          {errors.target_count ? <small className="field-error">{errors.target_count}</small> : <small className="field-help">设置后系统将在获得足够有效结果时自动停止搜索。</small>}
-        </label>
-      </div>
+      </section>
 
-      <div className="field" style={{ marginTop: 16 }}>
-        <div className="field-inline">
-          <span>语言</span>
-          <div className="inline-actions">
-            <button className="text-button" type="button" onClick={() => setSelectedLanguages(availableLanguages)}>全选</button>
-            <button className="text-button" type="button" onClick={() => setSelectedLanguages([])}>取消全选</button>
+      <section className="search-block panel">
+        <div className="block-heading">
+          <h3>区块 B：目标市场</h3>
+          <div className="block-divider" />
+        </div>
+
+        <div className="field">
+          <span>大洲（复选框组）</span>
+          <div className="continent-row">
+            {CONTINENTS.map((continent) => (
+              <label key={continent} className="chip-checkbox">
+                <input type="checkbox" checked={selectedContinents.includes(continent)} onChange={() => toggleContinent(continent)} />
+                <span>{CONTINENT_LABELS[continent] ?? continent}</span>
+              </label>
+            ))}
           </div>
         </div>
-        <div className={`checkbox-grid ${errors.languages ? 'checkbox-grid-error' : ''}`}>
-          {availableLanguages.map((language) => (
-            <label key={language} className="checkbox-card">
-              <input
-                type="checkbox"
-                checked={selectedLanguages.includes(language)}
-                onChange={() => toggleLanguage(language)}
-              />
-              <span>{LANGUAGE_LABELS[language] ?? language} ({language})</span>
-            </label>
-          ))}
-        </div>
-        {errors.languages ? <small className="field-error">{errors.languages}</small> : null}
-      </div>
 
-      <div className="actions" style={{ marginTop: 20 }}>
-        <button className="button" type="submit" disabled={isSubmitting}>
-          {isSubmitting ? '搜索中…' : '启动异步搜索'}
-        </button>
-      </div>
+        <div className="field">
+          <div className="field-inline">
+            <span>国家/地区（按已选大洲过滤）</span>
+            {visibleCountries.length > 20 ? (
+              <input
+                className="input country-search"
+                value={countrySearch}
+                onChange={(e) => setCountrySearch(e.target.value)}
+                placeholder="🔍 搜索国家..."
+              />
+            ) : null}
+          </div>
+          <div className={`country-panel ${errors.countries ? 'input-error' : ''}`}>
+            {groupedCountries.length === 0 ? <div className="muted-text">请先选择至少一个大洲。</div> : null}
+            {groupedCountries.map((group) => (
+              <section key={group.continent} className="country-group">
+                <div className="field-inline country-group-header">
+                  <strong>{CONTINENT_LABELS[group.continent] ?? group.continent}</strong>
+                  <div className="inline-actions">
+                    <button type="button" className="text-button" onClick={() => bulkToggleContinent(group.continent, 'select')}>全选该大洲</button>
+                    <button type="button" className="text-button" onClick={() => bulkToggleContinent(group.continent, 'clear')}>取消全选</button>
+                  </div>
+                </div>
+                <div className="country-grid">
+                  {group.items.map((entry) => (
+                    <label key={entry.code} className="checkbox-card compact">
+                      <input type="checkbox" checked={selectedCountries.includes(entry.code)} onChange={() => toggleCountry(entry.code)} />
+                      <span>{entry.name_local || entry.name_en} <small>({entry.name_en})</small></span>
+                    </label>
+                  ))}
+                </div>
+              </section>
+            ))}
+          </div>
+          {errors.countries ? <small className="field-error">{errors.countries}</small> : null}
+        </div>
+
+        <div className="field">
+          <div className="field-inline">
+            <span>搜索语言（复选框组）</span>
+            <div className="inline-actions">
+              <button className="text-button" type="button" onClick={() => setSelectedLanguages(availableLanguages)}>全选</button>
+              <button className="text-button" type="button" onClick={() => setSelectedLanguages([])}>取消全选</button>
+            </div>
+          </div>
+          <div className={`checkbox-grid ${errors.languages ? 'checkbox-grid-error' : ''}`}>
+            {availableLanguages.map((language) => (
+              <label key={language} className="checkbox-card compact">
+                <input type="checkbox" checked={selectedLanguages.includes(language)} onChange={() => toggleLanguage(language)} />
+                <span>{LANGUAGE_LABELS[language] ?? language}</span>
+              </label>
+            ))}
+          </div>
+          {errors.languages ? <small className="field-error">{errors.languages}</small> : null}
+        </div>
+      </section>
+
+      <section className="search-block panel">
+        <div className="block-heading">
+          <h3>区块 C：搜索配置</h3>
+          <div className="block-divider" />
+        </div>
+        <div className="config-row">
+          <label className="field config-field">
+            <span>目标客户数量（可选）</span>
+            <input
+              className={`input ${errors.target_count ? 'input-error' : ''}`}
+              type="number"
+              min={1}
+              step={1}
+              inputMode="numeric"
+              value={targetCountInput}
+              onChange={(e) => setTargetCountInput(e.target.value)}
+              placeholder="留空 = 搜索全部"
+            />
+            {errors.target_count ? <small className="field-error">{errors.target_count}</small> : <small className="field-help">留空表示尽可能搜索全部结果。</small>}
+          </label>
+          <div className="actions config-actions">
+            <button className="button" type="submit" disabled={isSubmitting}>{isSubmitting ? '搜索中…' : '开始搜索'}</button>
+          </div>
+        </div>
+      </section>
     </form>
   );
 }

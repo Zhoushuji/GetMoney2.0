@@ -30,7 +30,7 @@ class LeadRead(BaseModel):
     work_email: str | None = None
     phone: str | None = None
     whatsapp: str | None = None
-    potential_contacts: dict | None = None
+    potential_contacts: dict[str, list[str]] | None = None
     raw_data: dict | None = None
     created_at: datetime
 

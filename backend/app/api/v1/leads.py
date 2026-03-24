@@ -1,5 +1,6 @@
+import asyncio
+import csv
 import math
-import re
 from datetime import datetime, timezone
 from io import BytesIO, StringIO
 from urllib.parse import urlparse
@@ -11,181 +12,196 @@ from fastapi import APIRouter, Query
 from fastapi.responses import Response, StreamingResponse
 from openpyxl import Workbook
 from openpyxl.styles import Alignment, Font, PatternFill
-from openpyxl.utils import get_column_letter
 
+from app.config import get_settings
 from app.schemas.contact import ContactRead
 from app.schemas.lead import LeadListResponse, LeadRead, LeadSearchRequest
 from app.schemas.task import TaskCreateResponse, TaskStatusResponse
+from app.services.search.company_extractor import CompanyNameExtractor
 from app.services.search.serper import SerperClient
+from app.services.search.social_links import extract_facebook, extract_linkedin_company, scrape_social_from_website
 
 router = APIRouter(prefix="/leads", tags=["leads"])
-OVERSEARCH_MULTIPLIER = 1.5
 
 TASKS: dict[str, dict] = {}
 LEADS: dict[str, list[LeadRead]] = {}
 CONTACTS: dict[str, list[ContactRead]] = {}
-CHANNEL_POOL = ["google", "facebook", "linkedin", "yellowpages"]
 IGNORED_HOSTS = {"example.com", "example.org", "example.net", "linkedin.com", "www.linkedin.com", "facebook.com", "www.facebook.com"}
-GENERIC_TITLE_PATTERNS = [
-    re.compile(r"\b(home|official site|welcome|catalog|dealer|dealers|supplier|suppliers|manufacturer|manufacturers|factory|industrial|tools|power tools|valves?|distributor|distributors|quality|authorized)\b", re.I),
-    re.compile(r"\b(dubai|uae|abu dhabi|sharjah|in\s+[A-Z][a-z]+)\b", re.I),
+QUERY_TEMPLATES = [
+    "{product} supplier in {country}",
+    "{product} manufacturer in {country}",
+    "{product} factory in {country}",
+    "{product} exporter in {country}",
+    "{product} wholesaler in {country}",
+    "{product} company in {country}",
 ]
+LANGUAGE_TO_GL = {
+    "en": "us",
+    "zh": "cn",
+    "hi": "in",
+    "ar": "ae",
+    "fr": "fr",
+    "de": "de",
+    "es": "es",
+    "pt": "br",
+}
 
 
-def should_stop(confirmed_count: int, target: int | None) -> bool:
-    if target is None:
-        return False
-    return confirmed_count >= target
+class SearchRuntime:
+    def __init__(self) -> None:
+        self.settings = get_settings()
+        self.serper_client = SerperClient()
+        self.name_extractor = CompanyNameExtractor()
+        self.search_semaphore = asyncio.Semaphore(max(1, self.settings.max_concurrent_searches))
+        self.scrape_semaphore = asyncio.Semaphore(max(1, self.settings.max_concurrent_scrapers))
 
 
-def _domain_brand(host: str) -> str:
-    domain = host.removeprefix("www.")
-    label = domain.split(".")[0]
-    label = re.sub(r"[-_]+", " ", label)
-    return re.sub(r"\s+", " ", label).strip().title()
-
-
-def _is_generic_title(candidate: str) -> bool:
-    normalized = candidate.strip()
-    return any(pattern.search(normalized) for pattern in GENERIC_TITLE_PATTERNS)
-
-
-def _tokenize(value: str) -> set[str]:
-    return {token for token in re.split(r"[^a-z0-9]+", value.lower()) if token}
-
-
-def _normalize_company_name(title: str | None, host: str, snippet: str | None) -> str:
-    brand_from_domain = _domain_brand(host)
-    domain_tokens = _tokenize(brand_from_domain)
-    candidates: list[str] = []
-    for raw in [title or "", snippet or ""]:
-        parts = [part.strip() for part in re.split(r"\||-|–|—|:", raw) if part.strip()]
-        candidates.extend(parts)
-
-    for candidate in candidates:
-        if candidate.lower() == "home" or len(candidate) < 3:
-            continue
-        candidate_tokens = _tokenize(candidate)
-        if domain_tokens & candidate_tokens and not _is_generic_title(candidate):
-            return candidate
-
-    for candidate in candidates:
-        if candidate.lower() == "home" or len(candidate) < 3:
-            continue
-        if not _is_generic_title(candidate):
-            return candidate
-
-    return brand_from_domain
-
-
-async def _safe_serper_search(serper_client: SerperClient, query: str, hl: str, num: int) -> dict:
+async def _safe_serper_search(serper_client: SerperClient, query: str, hl: str, gl: str, num: int, page: int = 1) -> dict:
     try:
-        return await serper_client.search(query=query, hl=hl, num=num)
+        return await serper_client.search(query=query, hl=hl, gl=gl, num=num, page=page)
     except Exception:
         return {"organic": []}
 
 
-async def _find_social_link(serper_client: SerperClient, company_name: str, website: str, site: str) -> str | None:
-    host = urlparse(website).netloc.removeprefix("www.")
-    response = await _safe_serper_search(serper_client, query=f'site:{site} "{company_name}" "{host}"', hl="en", num=5)
-    for item in response.get("organic", []):
-        link = item.get("link")
-        if link and site in link:
-            return link
-    return None
-
-
-async def _fetch_homepage_metadata(website: str) -> tuple[str | None, str | None, str | None]:
+async def _fetch_homepage(website: str) -> tuple[BeautifulSoup | None, str | None]:
     try:
         async with httpx.AsyncClient(timeout=15.0, follow_redirects=True) as client:
             response = await client.get(website, headers={"User-Agent": "Mozilla/5.0 LeadGenBot/1.0"})
             response.raise_for_status()
     except Exception:
-        return None, None, None
+        return None, None
+    return BeautifulSoup(response.text, "html.parser"), response.text
 
-    soup = BeautifulSoup(response.text, "html.parser")
-    title_candidates = [
-        (soup.find("meta", attrs={"property": "og:site_name"}) or {}).get("content"),
-        (soup.find("meta", attrs={"name": "application-name"}) or {}).get("content"),
-        (soup.find("meta", attrs={"property": "og:title"}) or {}).get("content"),
-        soup.title.string.strip() if soup.title and soup.title.string else None,
-    ]
 
-    facebook_url = None
-    linkedin_url = None
-    for anchor in soup.select("a[href]"):
-        href = anchor.get("href")
-        if not href:
-            continue
-        if not facebook_url and "facebook.com" in href:
-            facebook_url = href
-        if not linkedin_url and "linkedin.com" in href:
-            linkedin_url = href
-        if facebook_url and linkedin_url:
-            break
+def _build_queries(payload: LeadSearchRequest) -> list[dict[str, str]]:
+    countries = payload.countries or [""]
+    languages = payload.languages or ["en"]
+    queries: list[dict[str, str]] = []
+    for country in countries:
+        for language in languages:
+            gl = LANGUAGE_TO_GL.get(language, "us")
+            for template in QUERY_TEMPLATES:
+                queries.append({
+                    "country": country,
+                    "language": language,
+                    "gl": gl,
+                    "query": template.format(product=payload.product_name, country=country).strip(),
+                })
+    return queries
 
-    company_title = next((candidate for candidate in title_candidates if candidate), None)
-    return company_title, facebook_url, linkedin_url
+
+def _max_pages(target_count: int | None) -> int:
+    if target_count is None:
+        return 3
+    return max(1, min(10, math.ceil(target_count / 50)))
+
+
+async def _search_serper_paginated(runtime: SearchRuntime, query: str, gl: str, hl: str, max_pages: int) -> list[dict]:
+    results: list[dict] = []
+    async with runtime.search_semaphore:
+        for page in range(1, max_pages + 1):
+            data = await _safe_serper_search(runtime.serper_client, query=query, hl=hl, gl=gl, num=10, page=page)
+            organic = data.get("organic", [])
+            results.extend(organic)
+            if len(organic) < 10:
+                break
+    return results
+
+
+async def _search_social_via_google(runtime: SearchRuntime, company_name: str, domain: str) -> dict[str, str | None]:
+    facebook_query = f'"{company_name}" "{domain}" site:facebook.com'
+    linkedin_query = f'"{company_name}" "{domain}" site:linkedin.com/company'
+    facebook_data, linkedin_data = await asyncio.gather(
+        _safe_serper_search(runtime.serper_client, query=facebook_query, hl="en", gl="us", num=5),
+        _safe_serper_search(runtime.serper_client, query=linkedin_query, hl="en", gl="us", num=5),
+    )
+    facebook_text = "\n".join(item.get("link", "") for item in facebook_data.get("organic", []))
+    linkedin_text = "\n".join(item.get("link", "") for item in linkedin_data.get("organic", []))
+    return {"facebook": extract_facebook(facebook_text), "linkedin": extract_linkedin_company(linkedin_text)}
+
+
+async def _get_social_links(runtime: SearchRuntime, company_name: str, website: str, soup: BeautifulSoup | None) -> dict[str, str | None]:
+    domain = urlparse(website).netloc.removeprefix("www.")
+    google_links = await _search_social_via_google(runtime, company_name, domain)
+    website_links = scrape_social_from_website(website, soup)
+    return {
+        "facebook": google_links.get("facebook") or website_links.get("facebook"),
+        "linkedin": google_links.get("linkedin") or website_links.get("linkedin"),
+    }
+
+
+async def _build_lead_item(runtime: SearchRuntime, payload: LeadSearchRequest, serper_item: dict, country: str) -> dict | None:
+    url = serper_item.get("link")
+    if not url:
+        return None
+    parsed = urlparse(url)
+    host = parsed.netloc.lower()
+    if not host or host in IGNORED_HOSTS:
+        return None
+    website = f"{parsed.scheme or 'https'}://{host}"
+
+    async with runtime.scrape_semaphore:
+        soup, _html = await _fetch_homepage(website)
+
+    extracted_name = runtime.name_extractor.extract(serper_item, website, soup)
+    social_links = await _get_social_links(runtime, extracted_name.value, website, soup)
+    return {
+        "company_name": extracted_name.value,
+        "website": website,
+        "facebook_url": social_links.get("facebook"),
+        "linkedin_url": social_links.get("linkedin"),
+        "country": country,
+        "continent": None,
+        "source": "google",
+        "contact_status": "pending",
+        "contact_name": None,
+        "contact_title": None,
+        "linkedin_personal_url": None,
+        "personal_email": None,
+        "work_email": None,
+        "phone": None,
+        "whatsapp": None,
+        "potential_contacts": None,
+        "raw_data": {
+            "search_title": serper_item.get("title"),
+            "search_snippet": serper_item.get("snippet"),
+            "name_source": extracted_name.source,
+        },
+    }
 
 
 async def _fetch_search_results(payload: LeadSearchRequest) -> list[dict]:
-    serper_client = SerperClient()
-    target = payload.target_count or 10
-    max_results = max(1, math.ceil(target * OVERSEARCH_MULTIPLIER))
-    countries = payload.countries or [""]
-    queries = [f"{payload.product_name} supplier in {country}".strip() for country in countries[:3]]
-    language = payload.languages[0] if payload.languages else "en"
+    runtime = SearchRuntime()
+    queries = _build_queries(payload)
+    paged_results = await asyncio.gather(*[
+        _search_serper_paginated(runtime, query=item["query"], gl=item["gl"], hl=item["language"], max_pages=_max_pages(payload.target_count))
+        for item in queries
+    ])
 
     collected: list[dict] = []
     seen_hosts: set[str] = set()
+    max_results = payload.target_count or len(queries) * 30
 
-    async def add_result(url: str | None, title: str | None, snippet: str | None, source: str, country: str | None) -> None:
-        if not url:
-            return
-        parsed = urlparse(url)
-        host = parsed.netloc.lower()
-        if not host or host in seen_hosts or host in IGNORED_HOSTS:
-            return
-
-        website = f"{parsed.scheme or 'https'}://{host}"
-        homepage_title, homepage_facebook, homepage_linkedin = await _fetch_homepage_metadata(website)
-        company_name = _normalize_company_name(homepage_title or title, host, snippet)
-        seen_hosts.add(host)
-        facebook_url = homepage_facebook or await _find_social_link(serper_client, company_name, website, "facebook.com")
-        linkedin_url = homepage_linkedin or await _find_social_link(serper_client, company_name, website, "linkedin.com")
-
-        collected.append({
-            "company_name": company_name,
-            "website": website,
-            "facebook_url": facebook_url,
-            "linkedin_url": linkedin_url,
-            "country": country,
-            "continent": payload.continents[0] if payload.continents else None,
-            "source": source,
-            "contact_status": "pending",
-            "contact_name": None,
-            "contact_title": None,
-            "personal_email": None,
-            "work_email": None,
-            "phone": None,
-            "whatsapp": None,
-            "raw_data": {"search_title": title, "homepage_title": homepage_title, "snippet": snippet, "source": source},
-        })
-
-    for query_index, query in enumerate(queries):
-        country = countries[query_index] if query_index < len(countries) else None
-        serper_data = await _safe_serper_search(serper_client, query=query, hl=language, num=max_results)
-        for item in serper_data.get("organic", []):
-            await add_result(item.get("link"), item.get("title"), item.get("snippet"), "google", country)
-            if should_stop(len(collected), payload.target_count) or len(collected) >= max_results:
+    for query_info, search_results in zip(queries, paged_results, strict=False):
+        for item in search_results:
+            lead_item = await _build_lead_item(runtime, payload, item, query_info["country"])
+            if not lead_item:
+                continue
+            host = urlparse(lead_item["website"]).netloc.lower()
+            if host in seen_hosts:
+                continue
+            seen_hosts.add(host)
+            collected.append(lead_item)
+            if payload.target_count and len(collected) >= payload.target_count:
                 return collected
-
+            if len(collected) >= max_results:
+                return collected
     return collected
 
 
 def build_task_status(task: dict) -> TaskStatusResponse:
     now = datetime.now(timezone.utc)
-    stopped_early = should_stop(task["confirmed_leads"], task["target_count"])
+    stopped_early = task["target_count"] is not None and task["confirmed_leads"] >= task["target_count"]
     status = "stopped_early" if stopped_early else task["status"]
     progress = 100 if status in {"completed", "stopped_early"} else task["progress"]
     task.update({"status": status, "progress": progress, "stopped_early": stopped_early, "updated_at": now})
@@ -211,29 +227,13 @@ def _style_workbook(sheet) -> None:
     center_alignment = Alignment(vertical="center", wrap_text=True)
     sheet.freeze_panes = "A2"
     sheet.auto_filter.ref = sheet.dimensions
-
     for cell in sheet[1]:
         cell.fill = header_fill
         cell.font = header_font
         cell.alignment = center_alignment
-
-    widths = {
-        "A": 28,
-        "B": 40,
-        "C": 40,
-        "D": 40,
-        "E": 18,
-        "F": 14,
-        "G": 24,
-        "H": 24,
-        "I": 24,
-        "J": 28,
-        "K": 20,
-        "L": 20,
-    }
+    widths = {"A": 24, "B": 30, "C": 26, "D": 28, "E": 18, "F": 16, "G": 22, "H": 22, "I": 24, "J": 28, "K": 20, "L": 20, "M": 30}
     for column, width in widths.items():
         sheet.column_dimensions[column].width = width
-
     for row in sheet.iter_rows(min_row=2):
         for cell in row:
             cell.alignment = Alignment(vertical="top", wrap_text=True)
@@ -244,11 +244,8 @@ async def create_lead_search(payload: LeadSearchRequest) -> TaskCreateResponse:
     task_id = uuid4()
     now = datetime.now(timezone.utc)
     results = await _fetch_search_results(payload)
-    target_count = payload.target_count
-    confirmed_leads = len(results) if target_count is None else min(len(results), target_count)
-    total = math.ceil(target_count * OVERSEARCH_MULTIPLIER) if target_count else len(results)
-    total = max(total, confirmed_leads)
-
+    confirmed_leads = len(results) if payload.target_count is None else min(len(results), payload.target_count)
+    total = max(len(results), confirmed_leads)
     TASKS[str(task_id)] = {
         "id": task_id,
         "status": "completed",
@@ -256,33 +253,13 @@ async def create_lead_search(payload: LeadSearchRequest) -> TaskCreateResponse:
         "total": total,
         "completed": total,
         "confirmed_leads": confirmed_leads,
-        "target_count": target_count,
-        "stopped_early": should_stop(confirmed_leads, target_count),
+        "target_count": payload.target_count,
+        "stopped_early": payload.target_count is not None and confirmed_leads >= payload.target_count,
         "created_at": now,
         "updated_at": now,
     }
-
     LEADS[str(task_id)] = [
-        LeadRead(
-            id=uuid4(),
-            task_id=task_id,
-            company_name=item["company_name"],
-            website=item["website"],
-            facebook_url=item["facebook_url"],
-            linkedin_url=item["linkedin_url"],
-            country=item["country"],
-            continent=item["continent"],
-            source=item["source"],
-            contact_status=item["contact_status"],
-            contact_name=item["contact_name"],
-            contact_title=item["contact_title"],
-            personal_email=item["personal_email"],
-            work_email=item["work_email"],
-            phone=item["phone"],
-            whatsapp=item["whatsapp"],
-            raw_data=item["raw_data"],
-            created_at=now,
-        )
+        LeadRead(id=uuid4(), task_id=task_id, created_at=now, **item)
         for item in results[:confirmed_leads]
     ]
     return TaskCreateResponse(task_id=task_id)
@@ -299,38 +276,33 @@ async def list_leads(task_id: UUID, page: int = Query(1, ge=1), page_size: int =
 @router.get("/export")
 async def export_leads(task_id: UUID, format: str = "xlsx", include_contacts: bool = False):
     leads = LEADS.get(str(task_id), [])
+    headers = ["company_name", "website", "facebook_url", "linkedin_url", "country", "status", "name_source"]
+    if include_contacts:
+        headers += ["contact_name", "contact_title", "personal_email", "work_email", "phone", "whatsapp", "potential_contacts"]
     if format == "csv":
         buffer = StringIO()
-        headers = ["company_name", "website", "facebook_url", "linkedin_url", "country", "status"]
-        if include_contacts:
-            headers += ["contact_name", "contact_title", "personal_email", "work_email", "phone", "whatsapp"]
-        buffer.write(",".join(headers) + "\n")
+        writer = csv.writer(buffer)
+        writer.writerow(headers)
         for lead in leads:
-            row = [lead.company_name or "", lead.website or "", lead.facebook_url or "", lead.linkedin_url or "", lead.country or "", lead.contact_status]
+            row = [lead.company_name or "", lead.website or "", lead.facebook_url or "", lead.linkedin_url or "", lead.country or "", lead.contact_status, (lead.raw_data or {}).get("name_source", "")]
             if include_contacts:
-                row += [lead.contact_name or "", lead.contact_title or "", lead.personal_email or "", lead.work_email or "", lead.phone or "", lead.whatsapp or ""]
-            buffer.write(",".join(row) + "\n")
+                row += [lead.contact_name or "", lead.contact_title or "", lead.personal_email or "", lead.work_email or "", lead.phone or "", lead.whatsapp or "", "; ".join((lead.potential_contacts or {}).get("items", []))]
+            writer.writerow(row)
         return Response(content=buffer.getvalue(), media_type="text/csv")
 
     workbook = Workbook()
     sheet = workbook.active
     sheet.title = "Lead Results"
-    headers = ["Company Name", "Website", "Facebook URL", "LinkedIn URL", "Country", "Status"]
+    pretty_headers = ["Company Name", "Website", "Facebook URL", "LinkedIn URL", "Country", "Status", "Name Source"]
     if include_contacts:
-        headers += ["Contact Name", "Contact Title", "Personal Email", "Work Email", "Phone", "WhatsApp"]
-    sheet.append(headers)
+        pretty_headers += ["Contact Name", "Contact Title", "Personal Email", "Work Email", "Phone", "WhatsApp", "Potential Contacts"]
+    sheet.append(pretty_headers)
     for lead in leads:
-        row = [lead.company_name, lead.website, lead.facebook_url, lead.linkedin_url, lead.country, lead.contact_status]
+        row = [lead.company_name, lead.website, lead.facebook_url, lead.linkedin_url, lead.country, lead.contact_status, (lead.raw_data or {}).get("name_source")]
         if include_contacts:
-            row += [lead.contact_name, lead.contact_title, lead.personal_email, lead.work_email, lead.phone, lead.whatsapp]
+            row += [lead.contact_name, lead.contact_title, lead.personal_email, lead.work_email, lead.phone, lead.whatsapp, "\n".join((lead.potential_contacts or {}).get("items", []))]
         sheet.append(row)
     _style_workbook(sheet)
-    for row in range(2, sheet.max_row + 1):
-        for column in [2, 3, 4]:
-            cell = sheet.cell(row=row, column=column)
-            if cell.value:
-                cell.hyperlink = cell.value
-                cell.style = "Hyperlink"
     data = BytesIO()
     workbook.save(data)
     data.seek(0)

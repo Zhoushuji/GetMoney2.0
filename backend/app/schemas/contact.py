@@ -23,7 +23,7 @@ class ContactRead(BaseModel):
     linkedin_personal_url: str | None = None
     phone: str | None = None
     whatsapp: str | None = None
-    potential_contacts: dict | None = None
+    potential_contacts: dict[str, list[str]] | None = None
     source_urls: list[str] | None = None
     verified_at: datetime | None = None
 
