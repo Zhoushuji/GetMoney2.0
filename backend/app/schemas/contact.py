@@ -40,3 +40,4 @@ class ContactStatusResponse(BaseModel):
     contact_status: str
     contacts: list[ContactRead] = []
     error: str | None = None
+    error_details: dict | None = None

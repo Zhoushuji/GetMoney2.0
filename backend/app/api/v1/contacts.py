@@ -1,5 +1,6 @@
 from datetime import datetime, timezone
 import logging
+import traceback
 from uuid import UUID, uuid4
 
 from fastapi import APIRouter
@@ -55,16 +56,21 @@ async def enrich_contacts(payload: ContactEnrichRequest) -> TaskCreateResponse:
     try:
         enrich_contacts_task.delay(lead_ids=lead_ids, enrich_task_id=str(task_id))
     except Exception as exc:
+        exception_message = f"{type(exc).__name__}: {exc}"
+        traceback_text = traceback.format_exc(limit=30)
         for lead_id in lead_ids:
             lead = lead_lookup.get(lead_id)
             if lead:
-                _update_lead_contact_status(lead, "failed", error=str(exc))
+                _update_lead_contact_status(lead, "failed", error=exception_message)
+                lead.raw_data = {**(lead.raw_data or {}), "contact_traceback": traceback_text}
                 logger.exception(
-                    "contacts enrich dispatch failed: lead_id=%s website=%s exception_type=%s exception_message=%s",
+                    "contacts enrich dispatch failed: task_id=%s lead_id=%s website=%s exception_type=%s exception_message=%s traceback=%s",
+                    task_id,
                     lead_id,
                     getattr(lead, "website", None),
                     type(exc).__name__,
                     str(exc),
+                    traceback_text,
                 )
     return TaskCreateResponse(task_id=task_id)
 
@@ -84,10 +90,26 @@ async def list_contacts(lead_id: UUID) -> ContactListResponse:
 async def get_contact_status(lead_id: UUID) -> ContactStatusResponse:
     lead = _find_lead(str(lead_id))
     if not lead:
-        return ContactStatusResponse(lead_id=lead_id, contact_status="failed", contacts=[], error="Lead not found")
+        return ContactStatusResponse(
+            lead_id=lead_id,
+            contact_status="failed",
+            contacts=[],
+            error="Lead not found",
+            error_details={"exception_type": "NotFound", "exception_message": "Lead not found"},
+        )
+    raw_data = lead.raw_data or {}
+    error = raw_data.get("contact_error")
+    traceback_text = raw_data.get("contact_traceback")
+    error_details = None
+    if error or traceback_text:
+        error_details = {
+            "exception_message": error,
+            "traceback": traceback_text,
+        }
     return ContactStatusResponse(
         lead_id=lead_id,
         contact_status=lead.contact_status,
         contacts=CONTACTS.get(str(lead_id), []) if lead.contact_status == "done" else [],
-        error=(lead.raw_data or {}).get("contact_error"),
+        error=error,
+        error_details=error_details,
     )
