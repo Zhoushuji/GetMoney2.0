@@ -19,3 +19,8 @@ class SerperClient:
             )
             response.raise_for_status()
             return response.json()
+
+
+async def call_serper(query: str, gl: str = "us", hl: str = "en", num: int = 10, page: int = 1) -> dict:
+    client = SerperClient()
+    return await client.search(query=query, gl=gl, hl=hl, num=num, page=page)

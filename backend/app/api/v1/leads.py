@@ -17,9 +17,9 @@ from app.config import get_settings
 from app.schemas.contact import ContactRead
 from app.schemas.lead import LeadListResponse, LeadRead, LeadSearchRequest
 from app.schemas.task import TaskCreateResponse, TaskStatusResponse
-from app.services.search.company_extractor import CompanyNameExtractor
+from app.services.extraction.company_name import CompanyNameExtractor
+from app.services.extraction.social_links import SocialLinksExtractor
 from app.services.search.serper import SerperClient
-from app.services.search.social_links import extract_facebook, extract_linkedin_company, scrape_social_from_website
 
 router = APIRouter(prefix="/leads", tags=["leads"])
 
@@ -51,7 +51,6 @@ class SearchRuntime:
     def __init__(self) -> None:
         self.settings = get_settings()
         self.serper_client = SerperClient()
-        self.name_extractor = CompanyNameExtractor()
         self.search_semaphore = asyncio.Semaphore(max(1, self.settings.max_concurrent_searches))
         self.scrape_semaphore = asyncio.Semaphore(max(1, self.settings.max_concurrent_scrapers))
 
@@ -108,28 +107,6 @@ async def _search_serper_paginated(runtime: SearchRuntime, query: str, gl: str, 
     return results
 
 
-async def _search_social_via_google(runtime: SearchRuntime, company_name: str, domain: str) -> dict[str, str | None]:
-    facebook_query = f'"{company_name}" "{domain}" site:facebook.com'
-    linkedin_query = f'"{company_name}" "{domain}" site:linkedin.com/company'
-    facebook_data, linkedin_data = await asyncio.gather(
-        _safe_serper_search(runtime.serper_client, query=facebook_query, hl="en", gl="us", num=5),
-        _safe_serper_search(runtime.serper_client, query=linkedin_query, hl="en", gl="us", num=5),
-    )
-    facebook_text = "\n".join(item.get("link", "") for item in facebook_data.get("organic", []))
-    linkedin_text = "\n".join(item.get("link", "") for item in linkedin_data.get("organic", []))
-    return {"facebook": extract_facebook(facebook_text), "linkedin": extract_linkedin_company(linkedin_text)}
-
-
-async def _get_social_links(runtime: SearchRuntime, company_name: str, website: str, soup: BeautifulSoup | None) -> dict[str, str | None]:
-    domain = urlparse(website).netloc.removeprefix("www.")
-    google_links = await _search_social_via_google(runtime, company_name, domain)
-    website_links = await scrape_social_from_website(website, soup)
-    return {
-        "facebook": google_links.get("facebook") or website_links.get("facebook"),
-        "linkedin": google_links.get("linkedin") or website_links.get("linkedin"),
-    }
-
-
 async def _build_lead_item(runtime: SearchRuntime, payload: LeadSearchRequest, serper_item: dict, country: str) -> dict | None:
     url = serper_item.get("link")
     if not url:
@@ -141,16 +118,17 @@ async def _build_lead_item(runtime: SearchRuntime, payload: LeadSearchRequest, s
     website = f"{parsed.scheme or 'https'}://{host}"
 
     async with runtime.scrape_semaphore:
-        soup, _html = await _fetch_homepage(website)
-
-    async def fetch_about_soup(url: str, timeout: float = 5.0) -> BeautifulSoup | None:
-        about_soup, _ = await _fetch_homepage(url, timeout=timeout)
-        return about_soup
-
-    extracted_name = await runtime.name_extractor.extract(serper_item, website, soup, fetch_page=fetch_about_soup)
-    social_links = await _get_social_links(runtime, extracted_name.value, website, soup)
+        soup, html = await _fetch_homepage(website)
+    domain = parsed.netloc.removeprefix("www.")
+    async with httpx.AsyncClient(timeout=10.0, follow_redirects=True) as client:
+        name_extractor = CompanyNameExtractor(http_client=client)
+        social_extractor = SocialLinksExtractor(http_client=client)
+        company_name, social_links = await asyncio.gather(
+            name_extractor.extract(website, serper_result=serper_item, homepage_html=html),
+            social_extractor.extract((serper_item.get("knowledgeGraph", {}) or {}).get("title", domain), domain),
+        )
     return {
-        "company_name": extracted_name.value,
+        "company_name": company_name,
         "website": website,
         "facebook_url": social_links.get("facebook"),
         "linkedin_url": social_links.get("linkedin"),
@@ -172,7 +150,7 @@ async def _build_lead_item(runtime: SearchRuntime, payload: LeadSearchRequest, s
         "raw_data": {
             "search_title": serper_item.get("title"),
             "search_snippet": serper_item.get("snippet"),
-            "name_source": extracted_name.source,
+            "name_source": "extraction_v22",
         },
     }
 

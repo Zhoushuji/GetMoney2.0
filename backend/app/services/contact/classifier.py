@@ -3,14 +3,17 @@ import re
 
 class TitleClassifier:
     WHITE_LIST_PATTERNS = [
-        (1, re.compile(r"\b(CEO|Chief Executive Officer|Founder|Co-Founder|Owner|Co-Owner)\b", re.I)),
-        (2, re.compile(r"\bManaging Director\b", re.I)),
-        (3, re.compile(r"\b(General Manager|GM)\b", re.I)),
-        (4, re.compile(r"\b(Procurement|Purchasing|Sourcing)\b", re.I)),
+        (1, re.compile(r"\b(CEO|Chief Executive(?: Officer)?|Founder|Co[-\s]?Founder|Owner|Co-Owner|President|Chairman|Chairperson)\b", re.I)),
+        (2, re.compile(r"\b(Managing Director|MD|Director General|General Director|Executive Director|Geschaeftsfuehrer|Gesch.+f.+hrer|Director Ejecutivo)\b", re.I)),
+        (3, re.compile(r"\b(General Manager|GM|COO|Chief Operating Officer|VP(?: of)? (?:Operations|Business|Commercial)|Vice President(?: of)? (?:Operations|Business|Commercial)|Head of (?:Operations|Business)|Betriebsleiter|Gerente General)\b", re.I)),
+        (4, re.compile(r"\b(Procurement|Purchasing|Sourcing|Supply Chain|CPO|Chief Procurement Officer|Head of (?:Procurement|Purchasing|Sourcing)|Director of (?:Procurement|Purchasing|Sourcing)|VP(?: of)? (?:Procurement|Purchasing|Sourcing)|Einkauf|Einkaufsleiter)\b", re.I)),
     ]
     BLACK_LIST_PATTERNS = [
-        re.compile(r"\b(?<!Managing )Director\b", re.I),
-        re.compile(r"\b(Sales|Marketing|Support|Customer Service|HR|Human Resources|Accountant|Intern)\b", re.I),
+        re.compile(r"\bSales\b(?!\s+(?:Director|General)\b)", re.I),
+        re.compile(r"\b(Marketing|Brand|Customer Service|Support|Receptionist|Administrat|HR|Human Resources|Accountant|Bookkeeper|Intern|Trainee)\b", re.I),
+        re.compile(r"\bFinance\b(?!\s+Director)", re.I),
+        re.compile(r"\bAssistant\b(?!\s+(?:General\s+Manager|Managing))", re.I),
+        re.compile(r"^Director(?:\s*,)?$", re.I),
     ]
 
     def classify(self, title: str) -> tuple[bool, int]:
