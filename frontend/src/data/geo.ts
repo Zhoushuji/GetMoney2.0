@@ -2,6 +2,7 @@ export type GeoEntry = {
   code: string;
   name_en: string;
   name_local: string;
+  name_zh: string;
   continent: string;
   languages: string[];
 };
@@ -132,7 +133,7 @@ export const LANGUAGE_LABELS: Record<string, string> = {
   "mt": "Maltese"
 };
 
-export const geoData: GeoEntry[] = [
+const rawGeoData: Array<Omit<GeoEntry, "name_zh">> = [
   {
     "code": "DZ",
     "name_en": "Algeria",
@@ -2173,3 +2174,23 @@ export const geoData: GeoEntry[] = [
     ]
   }
 ];
+
+
+const COUNTRY_ZH_BY_CODE: Record<string, string> = {
+  CN: "中国", IN: "印度", DE: "德国", US: "美国", GB: "英国", FR: "法国", JP: "日本", KR: "韩国",
+  BR: "巴西", RU: "俄罗斯", CA: "加拿大", AU: "澳大利亚", IT: "意大利", ES: "西班牙", MX: "墨西哥",
+  ZA: "南非", NG: "尼日利亚", EG: "埃及", TR: "土耳其", SA: "沙特阿拉伯", AE: "阿联酋", ID: "印度尼西亚",
+  PK: "巴基斯坦", BD: "孟加拉国", VN: "越南", TH: "泰国", MY: "马来西亚", SG: "新加坡", PH: "菲律宾",
+  NZ: "新西兰", AR: "阿根廷", CL: "智利", CO: "哥伦比亚", PE: "秘鲁", NL: "荷兰", BE: "比利时",
+  SE: "瑞典", NO: "挪威", DK: "丹麦", FI: "芬兰", PL: "波兰", CH: "瑞士", AT: "奥地利", IE: "爱尔兰",
+  PT: "葡萄牙", CZ: "捷克", HU: "匈牙利", RO: "罗马尼亚", GR: "希腊", UA: "乌克兰", IL: "以色列",
+  IR: "伊朗", IQ: "伊拉克", QA: "卡塔尔", KW: "科威特", OM: "阿曼", JO: "约旦", LK: "斯里兰卡",
+  NP: "尼泊尔", MM: "缅甸", KH: "柬埔寨", LA: "老挝", MN: "蒙古", KZ: "哈萨克斯坦", UZ: "乌兹别克斯坦",
+  ET: "埃塞俄比亚", KE: "肯尼亚", TZ: "坦桑尼亚", UG: "乌干达", GH: "加纳", CI: "科特迪瓦", MA: "摩洛哥",
+  DZ: "阿尔及利亚", TN: "突尼斯", LY: "利比亚", SD: "苏丹", CM: "喀麦隆", ZM: "赞比亚", ZW: "津巴布韦"
+};
+
+export const geoData: GeoEntry[] = rawGeoData.map((entry) => ({
+  ...entry,
+  name_zh: COUNTRY_ZH_BY_CODE[entry.code] ?? entry.name_local ?? entry.name_en,
+}));

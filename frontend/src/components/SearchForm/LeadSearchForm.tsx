@@ -36,27 +36,22 @@ export function LeadSearchForm({ isSubmitting, onSubmit }: Props) {
   const [targetCountInput, setTargetCountInput] = useState('');
   const [errors, setErrors] = useState<FormErrors>({});
 
-  const groupedCountries = useMemo(() => {
-    const groups = selectedContinents.map((continent) => ({
-      continent,
-      items: geoData
-        .filter((entry) => entry.continent === continent)
-        .sort((a, b) => a.name_en.localeCompare(b.name_en))
-        .filter((entry) => {
-          const keyword = countrySearch.trim().toLowerCase();
-          if (!keyword) return true;
-          return `${entry.name_en} ${entry.name_local} ${entry.code}`.toLowerCase().includes(keyword);
-        }),
-    }));
-    return groups.filter((group) => group.items.length > 0);
-  }, [countrySearch, selectedContinents]);
+  const groupedCountries = useMemo(() => selectedContinents.map((continent) => {
+    const items = geoData
+      .filter((entry) => entry.continent === continent)
+      .sort((a, b) => a.name_en.localeCompare(b.name_en))
+      .filter((entry) => {
+        const keyword = countrySearch.trim().toLowerCase();
+        if (!keyword) return true;
+        return `${entry.name_en} ${entry.name_zh} ${entry.name_local} ${entry.code}`.toLowerCase().includes(keyword);
+      });
+    return { continent, items };
+  }).filter((group) => group.items.length > 0), [countrySearch, selectedContinents]);
 
   const visibleCountries = useMemo(() => groupedCountries.flatMap((group) => group.items), [groupedCountries]);
 
   const availableLanguages = useMemo(() => {
-    const fromCountries = geoData
-      .filter((entry) => selectedCountries.includes(entry.code))
-      .flatMap((entry) => entry.languages);
+    const fromCountries = geoData.filter((entry) => selectedCountries.includes(entry.code)).flatMap((entry) => entry.languages);
     const deduped = Array.from(new Set([ENGLISH_CODE, ...fromCountries]));
     return deduped.sort((a, b) => (LANGUAGE_LABELS[a] ?? a).localeCompare(LANGUAGE_LABELS[b] ?? b));
   }, [selectedCountries]);
@@ -75,33 +70,22 @@ export function LeadSearchForm({ isSubmitting, onSubmit }: Props) {
 
   const toggleContinent = (continent: string) => {
     setSelectedContinents((current) => {
-      if (current.includes(continent)) {
-        const next = current.filter((item) => item !== continent);
-        const continentCountryCodes = new Set(geoData.filter((entry) => entry.continent === continent).map((entry) => entry.code));
-        setSelectedCountries((existing) => existing.filter((code) => !continentCountryCodes.has(code)));
-        return next;
-      }
-      return [...current, continent];
+      if (!current.includes(continent)) return [...current, continent];
+      const next = current.filter((item) => item !== continent);
+      const codes = new Set(geoData.filter((entry) => entry.continent === continent).map((entry) => entry.code));
+      setSelectedCountries((existing) => existing.filter((code) => !codes.has(code)));
+      return next;
     });
   };
 
-  const toggleCountry = (code: string) => {
-    setSelectedCountries((current) => current.includes(code) ? current.filter((item) => item !== code) : [...current, code]);
-  };
-
-  const toggleLanguage = (language: string) => {
-    setSelectedLanguages((current) => current.includes(language) ? current.filter((item) => item !== language) : [...current, language]);
-  };
+  const toggleCountry = (code: string) => setSelectedCountries((current) => current.includes(code) ? current.filter((item) => item !== code) : [...current, code]);
+  const toggleLanguage = (language: string) => setSelectedLanguages((current) => current.includes(language) ? current.filter((item) => item !== language) : [...current, language]);
 
   const bulkToggleContinent = (continent: string, mode: 'select' | 'clear') => {
     const codes = geoData.filter((entry) => entry.continent === continent).map((entry) => entry.code);
     setSelectedCountries((current) => {
       const next = new Set(current);
-      if (mode === 'select') {
-        codes.forEach((code) => next.add(code));
-      } else {
-        codes.forEach((code) => next.delete(code));
-      }
+      codes.forEach((code) => mode === 'select' ? next.add(code) : next.delete(code));
       return Array.from(next);
     });
   };
@@ -116,16 +100,12 @@ export function LeadSearchForm({ isSubmitting, onSubmit }: Props) {
     let targetCount: number | null = null;
     if (targetCountInput.trim()) {
       const parsed = Number(targetCountInput);
-      if (!Number.isInteger(parsed) || parsed < 1) {
-        nextErrors.target_count = '目标客户数量必须是大于等于 1 的正整数';
-      } else {
-        targetCount = parsed;
-      }
+      if (!Number.isInteger(parsed) || parsed < 1) nextErrors.target_count = '目标客户数量必须是大于等于 1 的正整数';
+      else targetCount = parsed;
     }
 
     setErrors(nextErrors);
     if (Object.keys(nextErrors).length > 0) return null;
-
     return {
       product_name: trimmedName,
       continents: selectedContinents,
@@ -138,34 +118,22 @@ export function LeadSearchForm({ isSubmitting, onSubmit }: Props) {
   const submit = async (event: FormEvent) => {
     event.preventDefault();
     const payload = validate();
-    if (!payload) return;
-    await onSubmit(payload);
+    if (payload) await onSubmit(payload);
   };
 
   return (
     <form className="search-form-stack" onSubmit={submit}>
       <section className="search-block panel">
-        <div className="block-heading">
-          <h3>区块 A：产品信息</h3>
-          <div className="block-divider" />
-        </div>
+        <div className="block-heading"><h3>区块 A：产品信息</h3><div className="block-divider" /></div>
         <label className="field">
           <span>产品名称</span>
-          <input
-            className={`input ${errors.product_name ? 'input-error' : ''}`}
-            value={productName}
-            onChange={(e) => setProductName(e.target.value)}
-            placeholder="例如：industrial valve"
-          />
+          <input className={`input ${errors.product_name ? 'input-error' : ''}`} value={productName} onChange={(e) => setProductName(e.target.value)} placeholder="例如：industrial valve" />
           {errors.product_name ? <small className="field-error">{errors.product_name}</small> : null}
         </label>
       </section>
 
       <section className="search-block panel">
-        <div className="block-heading">
-          <h3>区块 B：目标市场</h3>
-          <div className="block-divider" />
-        </div>
+        <div className="block-heading"><h3>区块 B：目标市场</h3><div className="block-divider" /></div>
 
         <div className="field">
           <span>大洲（复选框组）</span>
@@ -182,46 +150,46 @@ export function LeadSearchForm({ isSubmitting, onSubmit }: Props) {
         <div className="field">
           <div className="field-inline">
             <span>国家/地区（按已选大洲过滤）</span>
-            {visibleCountries.length > 20 ? (
-              <input
-                className="input country-search"
-                value={countrySearch}
-                onChange={(e) => setCountrySearch(e.target.value)}
-                placeholder="🔍 搜索国家..."
-              />
-            ) : null}
+            {visibleCountries.length > 20 ? <input className="input country-search" value={countrySearch} onChange={(e) => setCountrySearch(e.target.value)} placeholder="🔍 搜索国家（中/英）..." /> : null}
           </div>
           <div className={`country-panel ${errors.countries ? 'input-error' : ''}`}>
             {groupedCountries.length === 0 ? <div className="muted-text">请先选择至少一个大洲。</div> : null}
-            {groupedCountries.map((group) => (
-              <section key={group.continent} className="country-group">
-                <div className="field-inline country-group-header">
-                  <strong>{CONTINENT_LABELS[group.continent] ?? group.continent}</strong>
-                  <div className="inline-actions">
-                    <button type="button" className="text-button" onClick={() => bulkToggleContinent(group.continent, 'select')}>全选该大洲</button>
-                    <button type="button" className="text-button" onClick={() => bulkToggleContinent(group.continent, 'clear')}>取消全选</button>
+            {groupedCountries.map((group) => {
+              const total = group.items.length;
+              const selectedCount = group.items.filter((item) => selectedCountries.includes(item.code)).length;
+              return (
+                <section key={group.continent} className="country-group">
+                  <div className="field-inline country-group-header">
+                    <div className="group-title-wrap">
+                      <strong>{CONTINENT_LABELS[group.continent] ?? group.continent}</strong>
+                      <small className="selection-counter">已选 {selectedCount} / 总 {total}</small>
+                    </div>
+                    <div className="mini-actions">
+                      <button type="button" className={`mini-btn mini-btn-select ${selectedCount === total && total > 0 ? 'is-active' : ''}`} onClick={() => bulkToggleContinent(group.continent, 'select')}>全选</button>
+                      <button type="button" className="mini-btn mini-btn-clear" disabled={selectedCount === 0} onClick={() => bulkToggleContinent(group.continent, 'clear')}>取消全选</button>
+                    </div>
                   </div>
-                </div>
-                <div className="country-grid">
-                  {group.items.map((entry) => (
-                    <label key={entry.code} className="checkbox-card compact">
-                      <input type="checkbox" checked={selectedCountries.includes(entry.code)} onChange={() => toggleCountry(entry.code)} />
-                      <span>{entry.name_local || entry.name_en} <small>({entry.name_en})</small></span>
-                    </label>
-                  ))}
-                </div>
-              </section>
-            ))}
+                  <div className="country-grid">
+                    {group.items.map((entry) => (
+                      <label key={entry.code} className="checkbox-card compact">
+                        <input type="checkbox" checked={selectedCountries.includes(entry.code)} onChange={() => toggleCountry(entry.code)} />
+                        <span>{entry.name_zh}（{entry.name_en}）</span>
+                      </label>
+                    ))}
+                  </div>
+                </section>
+              );
+            })}
           </div>
           {errors.countries ? <small className="field-error">{errors.countries}</small> : null}
         </div>
 
         <div className="field">
           <div className="field-inline">
-            <span>搜索语言（复选框组）</span>
-            <div className="inline-actions">
-              <button className="text-button" type="button" onClick={() => setSelectedLanguages(availableLanguages)}>全选</button>
-              <button className="text-button" type="button" onClick={() => setSelectedLanguages([])}>取消全选</button>
+            <div className="group-title-wrap"><span>搜索语言（复选框组）</span><small className="selection-counter">已选 {selectedLanguages.length} 种</small></div>
+            <div className="mini-actions">
+              <button className={`mini-btn mini-btn-select ${selectedLanguages.length === availableLanguages.length && availableLanguages.length > 0 ? 'is-active' : ''}`} type="button" onClick={() => setSelectedLanguages(availableLanguages)}>全选</button>
+              <button className="mini-btn mini-btn-clear" type="button" disabled={selectedLanguages.length === 0} onClick={() => setSelectedLanguages([])}>取消全选</button>
             </div>
           </div>
           <div className={`checkbox-grid ${errors.languages ? 'checkbox-grid-error' : ''}`}>
@@ -237,28 +205,14 @@ export function LeadSearchForm({ isSubmitting, onSubmit }: Props) {
       </section>
 
       <section className="search-block panel">
-        <div className="block-heading">
-          <h3>区块 C：搜索配置</h3>
-          <div className="block-divider" />
-        </div>
+        <div className="block-heading"><h3>区块 C：搜索配置</h3><div className="block-divider" /></div>
         <div className="config-row">
           <label className="field config-field">
             <span>目标客户数量（可选）</span>
-            <input
-              className={`input ${errors.target_count ? 'input-error' : ''}`}
-              type="number"
-              min={1}
-              step={1}
-              inputMode="numeric"
-              value={targetCountInput}
-              onChange={(e) => setTargetCountInput(e.target.value)}
-              placeholder="留空 = 搜索全部"
-            />
+            <input className={`input ${errors.target_count ? 'input-error' : ''}`} type="number" min={1} step={1} inputMode="numeric" value={targetCountInput} onChange={(e) => setTargetCountInput(e.target.value)} placeholder="留空 = 搜索全部" />
             {errors.target_count ? <small className="field-error">{errors.target_count}</small> : <small className="field-help">留空表示尽可能搜索全部结果。</small>}
           </label>
-          <div className="actions config-actions">
-            <button className="button" type="submit" disabled={isSubmitting}>{isSubmitting ? '搜索中…' : '开始搜索'}</button>
-          </div>
+          <div className="actions config-actions"><button className="button" type="submit" disabled={isSubmitting}>{isSubmitting ? '搜索中…' : '开始搜索'}</button></div>
         </div>
       </section>
     </form>

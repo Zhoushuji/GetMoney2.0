@@ -63,9 +63,9 @@ async def _safe_serper_search(serper_client: SerperClient, query: str, hl: str, 
         return {"organic": []}
 
 
-async def _fetch_homepage(website: str) -> tuple[BeautifulSoup | None, str | None]:
+async def _fetch_homepage(website: str, timeout: float = 15.0) -> tuple[BeautifulSoup | None, str | None]:
     try:
-        async with httpx.AsyncClient(timeout=15.0, follow_redirects=True) as client:
+        async with httpx.AsyncClient(timeout=timeout, follow_redirects=True) as client:
             response = await client.get(website, headers={"User-Agent": "Mozilla/5.0 LeadGenBot/1.0"})
             response.raise_for_status()
     except Exception:
@@ -123,7 +123,7 @@ async def _search_social_via_google(runtime: SearchRuntime, company_name: str, d
 async def _get_social_links(runtime: SearchRuntime, company_name: str, website: str, soup: BeautifulSoup | None) -> dict[str, str | None]:
     domain = urlparse(website).netloc.removeprefix("www.")
     google_links = await _search_social_via_google(runtime, company_name, domain)
-    website_links = scrape_social_from_website(website, soup)
+    website_links = await scrape_social_from_website(website, soup)
     return {
         "facebook": google_links.get("facebook") or website_links.get("facebook"),
         "linkedin": google_links.get("linkedin") or website_links.get("linkedin"),
@@ -143,7 +143,11 @@ async def _build_lead_item(runtime: SearchRuntime, payload: LeadSearchRequest, s
     async with runtime.scrape_semaphore:
         soup, _html = await _fetch_homepage(website)
 
-    extracted_name = runtime.name_extractor.extract(serper_item, website, soup)
+    async def fetch_about_soup(url: str, timeout: float = 5.0) -> BeautifulSoup | None:
+        about_soup, _ = await _fetch_homepage(url, timeout=timeout)
+        return about_soup
+
+    extracted_name = await runtime.name_extractor.extract(serper_item, website, soup, fetch_page=fetch_about_soup)
     social_links = await _get_social_links(runtime, extracted_name.value, website, soup)
     return {
         "company_name": extracted_name.value,
@@ -201,17 +205,19 @@ async def _fetch_search_results(payload: LeadSearchRequest) -> list[dict]:
 
 def build_task_status(task: dict) -> TaskStatusResponse:
     now = datetime.now(timezone.utc)
-    stopped_early = task["target_count"] is not None and task["confirmed_leads"] >= task["target_count"]
+    leads = LEADS.get(str(task["id"]), [])
+    confirmed_done = sum(1 for lead in leads if lead.contact_status == "done")
+    stopped_early = task["target_count"] is not None and confirmed_done >= task["target_count"]
     status = "stopped_early" if stopped_early else task["status"]
     progress = 100 if status in {"completed", "stopped_early"} else task["progress"]
-    task.update({"status": status, "progress": progress, "stopped_early": stopped_early, "updated_at": now})
+    task.update({"status": status, "progress": progress, "stopped_early": stopped_early, "updated_at": now, "confirmed_leads": confirmed_done})
     return TaskStatusResponse(
         id=task["id"],
         status=status,
         progress=progress,
         total=task["total"],
         completed=task["completed"],
-        confirmed_leads=task["confirmed_leads"],
+        confirmed_leads=confirmed_done,
         target_count=task["target_count"],
         stopped_early=stopped_early,
         estimated_remaining_seconds=0,

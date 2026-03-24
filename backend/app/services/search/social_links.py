@@ -1,6 +1,8 @@
+import asyncio
 import re
-from urllib.parse import urljoin, urlparse
+from urllib.parse import urljoin
 
+import httpx
 from bs4 import BeautifulSoup
 
 FACEBOOK_BLACKLIST_PATTERNS = [
@@ -17,12 +19,10 @@ FACEBOOK_VALID_PATTERN = re.compile(
     r"https?://(?:www\.)?facebook\.com/(?!sharer|share|dialog|login|plugins|watch|video|events|groups|marketplace)([a-zA-Z0-9._]{3,})/?",
     re.I,
 )
-LINKEDIN_VALID_COMPANY = re.compile(
-    r"https?://(?:[a-z]{2,3}\.)?linkedin\.com/company/([a-zA-Z0-9_-]+)/?$",
-    re.I,
-)
+LINKEDIN_VALID_COMPANY = re.compile(r"https?://(?:[a-z]{2,3}\.)?linkedin\.com/company/([a-zA-Z0-9_-]+)/?$", re.I)
 LINKEDIN_INVALID = re.compile(r"linkedin\.com/(?:in|jobs|posts|pulse)/", re.I)
 URL_PATTERN = re.compile(r"https?://[^\s\"'<>]+", re.I)
+CONTACT_PATHS = ["/", "/contact", "/contact-us", "/kontakt", "/kontakty", "/get-in-touch", "/reach-us"]
 
 
 def find_all_urls(text: str) -> list[str]:
@@ -49,20 +49,38 @@ def extract_linkedin_company(text: str) -> str | None:
     return None
 
 
-def scrape_social_from_website(website: str, soup: BeautifulSoup | None) -> dict[str, str | None]:
-    if soup is None:
-        return {"facebook": None, "linkedin": None}
-
-    urls: list[str] = []
-    for anchor in soup.select("a[href]"):
-        href = anchor.get("href")
-        if not href:
-            continue
-        absolute = urljoin(website, href)
-        urls.append(absolute)
-    text = "\n".join(urls)
-    return {"facebook": extract_facebook(text), "linkedin": extract_linkedin_company(text)}
+async def _fetch_soup(url: str, timeout: float = 5.0) -> BeautifulSoup | None:
+    try:
+        async with httpx.AsyncClient(timeout=timeout, follow_redirects=True) as client:
+            response = await client.get(url, headers={"User-Agent": "Mozilla/5.0 LeadGenBot/1.0"})
+            response.raise_for_status()
+            return BeautifulSoup(response.text, "html.parser")
+    except Exception:
+        return None
 
 
-def host_from_url(url: str) -> str:
-    return urlparse(url).netloc.removeprefix("www.").lower()
+async def scrape_social_from_website(website: str, homepage_soup: BeautifulSoup | None) -> dict[str, str | None]:
+    linkedin = None
+    if homepage_soup is not None:
+        homepage_links = [urljoin(website, href) for href in [a.get("href") for a in homepage_soup.select("a[href]")] if href]
+        linkedin = extract_linkedin_company("\n".join(homepage_links))
+
+    async def scan_page(path: str) -> str | None:
+        url = urljoin(website, path)
+        soup = homepage_soup if path == "/" and homepage_soup is not None else await _fetch_soup(url, timeout=5.0)
+        if soup is None:
+            return None
+        hrefs = [urljoin(url, href) for href in [a.get("href") for a in soup.select("a[href]")] if href]
+        text = soup.get_text(" ", strip=True)
+        return extract_facebook("\n".join(hrefs) + "\n" + text)
+
+    facebook = None
+    for path in CONTACT_PATHS:
+        try:
+            facebook = await asyncio.wait_for(scan_page(path), timeout=5.0)
+        except Exception:
+            facebook = None
+        if facebook:
+            break
+
+    return {"facebook": facebook, "linkedin": linkedin}

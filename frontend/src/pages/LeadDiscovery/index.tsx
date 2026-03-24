@@ -140,7 +140,7 @@ export function LeadDiscoveryPage() {
   const mergeContact = (leadId: string, contact?: ContactResponse['contacts'][number]) => {
     setRows((current) => current.map((row) => row.id !== leadId ? row : {
       ...row,
-      contact_status: contact ? 'done' : 'failed',
+      contact_status: contact ? 'done' : 'no_data',
       contact_name: contact?.person_name,
       contact_title: contact?.title,
       linkedin_personal_url: contact?.linkedin_personal_url,
@@ -220,21 +220,22 @@ export function LeadDiscoveryPage() {
 
       <section className={`panel section-panel ${step2Unlocked ? '' : 'panel-disabled'}`}>
         <h2>▼ STEP 2 — 核心联系人挖掘</h2>
-        <div className="result-toolbar">
-          <div className="toolbar-actions">
-            <button className="button secondary" type="button" disabled={!step2Unlocked} onClick={() => setSelectedIds(rows.map((row) => row.id))}>☑ 全选</button>
-            <button className="button" type="button" disabled={!step2Unlocked} onClick={() => runContactQueue(rows.filter((row) => row.contact_status === 'pending').map((row) => row.id))}>全部查找联系人</button>
-            <button className="button" type="button" disabled={!step2Unlocked || selectedIds.length === 0} onClick={() => runContactQueue(selectedIds)}>批量查找联系人（已选 {selectedIds.length} 家）</button>
-          </div>
-          <div className="toolbar-actions">
-            <button className="button secondary" type="button" disabled={!step2Unlocked} onClick={() => exportResults('xlsx')}>导出 Excel</button>
-            <button className="button secondary" type="button" disabled={!step2Unlocked} onClick={() => exportResults('csv')}>导出 CSV</button>
-          </div>
-        </div>
+        <p className="muted-text">联系人批量操作与导出已整合到下方统一结果表格工具栏右侧。</p>
       </section>
 
       <section className="section-panel">
         <h2>▼ 统一结果表格（STEP 1 + STEP 2 共用）</h2>
+        <div className="result-toolbar panel">
+          <div className="toolbar-actions">
+            <button className="button secondary" type="button" disabled={!step2Unlocked} onClick={() => setSelectedIds(rows.map((row) => row.id))}>☑ 全选</button>
+            <button className="button" type="button" disabled={!step2Unlocked} onClick={() => runContactQueue(rows.filter((row) => row.contact_status === 'pending' || row.contact_status === 'failed' || row.contact_status === 'timeout').map((row) => row.id))}>全部查找联系人</button>
+            <button className="button" type="button" disabled={!step2Unlocked || selectedIds.length === 0} onClick={() => runContactQueue(selectedIds)}>批量查找（{selectedIds.length}家）</button>
+          </div>
+          <div className="toolbar-actions">
+            <button className="export-btn export-btn-excel" type="button" disabled={!step2Unlocked} onClick={() => exportResults('xlsx')}>↓ Excel</button>
+            <button className="export-btn export-btn-csv" type="button" disabled={!step2Unlocked} onClick={() => exportResults('csv')}>↓ CSV</button>
+          </div>
+        </div>
         <LeadTable
           rows={rows}
           selectedIds={selectedIds}
