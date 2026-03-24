@@ -9,6 +9,12 @@ from bs4 import BeautifulSoup
 PRICE_PATTERN = re.compile(r"\b\d+(?:\.\d+)?\s*(?:Lakh|lakh|USD|INR|Rs\.?|₹|\$)\b", re.I)
 DESCRIPTIVE_PREFIX_PATTERN = re.compile(r"^(Get|Buy|Find|Best|Top|Cheap|Quality)\s+", re.I)
 INVALID_PATTERN = re.compile(r"^[\W\d_]+$")
+PLACEHOLDER_PATTERNS = [
+    re.compile(r"future home of", re.I),
+    re.compile(r"coming soon", re.I),
+    re.compile(r"under construction", re.I),
+]
+GENERIC_MARKETPLACE_PATTERN = re.compile(r"\b(manufacturer|manufacturers|supplier|suppliers|exporter|exporters|price|product|products)\b", re.I)
 
 
 @dataclass
@@ -72,6 +78,8 @@ class CompanyNameExtractor:
 
         for raw, source in candidates:
             cleaned = self.clean_title(raw or "")
+            if cleaned and source in {"title", "search_title", "snippet"}:
+                cleaned = self._prefer_domain_brand_when_title_is_generic(cleaned, raw or "", website)
             if self._is_valid(cleaned):
                 return ExtractedCompanyName(value=cleaned, source=source)
 
@@ -165,7 +173,11 @@ class CompanyNameExtractor:
         return node.get_text(" ", strip=True) if node else None
 
     def _is_valid(self, candidate: str) -> bool:
-        return bool(candidate and len(candidate) >= 3 and not INVALID_PATTERN.fullmatch(candidate))
+        if not candidate or len(candidate) < 3 or INVALID_PATTERN.fullmatch(candidate):
+            return False
+        if any(pattern.search(candidate) for pattern in PLACEHOLDER_PATTERNS):
+            return False
+        return True
 
     def _detect_lang_prefix(self, path: str) -> str | None:
         match = re.match(r"^/(en|de|fr|pl|es|it)(?:/|$)", path or "", re.I)
@@ -178,3 +190,11 @@ class CompanyNameExtractor:
         label = host.split(".")[0]
         label = re.sub(r"[-_]+", " ", label)
         return re.sub(r"\s+", " ", label).strip().title() or "Unknown"
+
+    def _prefer_domain_brand_when_title_is_generic(self, cleaned: str, raw: str, website: str) -> str:
+        domain_brand = self._domain_brand(website)
+        if not domain_brand:
+            return cleaned
+        if GENERIC_MARKETPLACE_PATTERN.search(cleaned) and domain_brand.lower() in (raw or "").lower():
+            return domain_brand
+        return cleaned

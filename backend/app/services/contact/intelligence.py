@@ -9,6 +9,7 @@ from uuid import uuid4
 
 from app.schemas.contact import ContactRead
 from app.services.contact.classifier import TitleClassifier
+from app.services.search.serper import SerperClient
 
 PHONE_NEAR_WA_WINDOW = 50
 INVALID_PERSON_NAME_PATTERNS = [
@@ -24,6 +25,9 @@ INVALID_LINKEDIN_PATTERNS = [
 INVALID_EMAIL_AS_PERSONAL = [
     re.compile(r"^(contact|info|hello|support|sales|admin|office|mail|enquiry|query)@", re.I),
 ]
+EXCLUDED_GENERAL_EMAIL_PATTERNS = [
+    re.compile(r"^(sales|marketing|support|hr|career|jobs)@", re.I),
+]
 EMAIL_PATTERN = re.compile(r"[A-Z0-9._%+-]+@[A-Z0-9.-]+\.[A-Z]{2,}", re.I)
 PHONE_PATTERN = re.compile(r"(?:\+\d[\d\s()-]{8,}\d)")
 WA_ME_PATTERN = re.compile(r"wa\.me/(\d{10,15})", re.I)
@@ -35,6 +39,7 @@ CONTACT_SCAN_PATHS = ["/", "/about", "/about-us", "/team", "/leadership", "/cont
 class ContactIntelligenceService:
     def __init__(self) -> None:
         self.classifier = TitleClassifier()
+        self.serper = SerperClient()
 
     def _soup_from_html(self, html: str):
         return BeautifulSoup(html, "html.parser")
@@ -51,9 +56,59 @@ class ContactIntelligenceService:
         potential_contacts = self._extract_potential_contacts(lead.website, soup)
 
         linkedin_people = self._extract_linkedin_people(soup, company_name)
+        if not linkedin_people and company_name:
+            linkedin_people = await self._search_linkedin_people_via_google(company_name)
         verified_people = self._verify_people(linkedin_people, company_name)
         contact = self._build_contact(lead, verified_people, potential_contacts, source_urls=source_urls)
         return [contact] if contact else []
+
+    async def _search_linkedin_people_via_google(self, company_name: str) -> list[dict]:
+        role_terms = ["owner", "\"managing director\"", "ceo", "founder"]
+        people: list[dict] = []
+        seen: set[str] = set()
+        for role in role_terms:
+            query = f'"{company_name}" site:linkedin.com/in {role}'
+            try:
+                result = await self.serper.search(query=query, gl="us", hl="en", num=5)
+            except Exception:
+                continue
+            for item in result.get("organic", []):
+                link = item.get("link", "")
+                if "linkedin.com/in/" not in link or link in seen:
+                    continue
+                seen.add(link)
+                title = item.get("title", "") or ""
+                snippet = item.get("snippet", "") or ""
+                role_title = self._guess_role_title_from_text(f"{title} {snippet}")
+                person_name = self._guess_person_name_from_title(title)
+                people.append({
+                    "person_name": person_name,
+                    "title": role_title,
+                    "linkedin_personal_url": link,
+                })
+        return people
+
+    def _guess_role_title_from_text(self, text: str) -> str | None:
+        mapping = [
+            (r"\bmanaging director\b", "Managing Director"),
+            (r"\bchief executive officer\b|\bceo\b", "CEO"),
+            (r"\bco-founder\b", "Co-Founder"),
+            (r"\bfounder\b", "Founder"),
+            (r"\bowner\b", "Owner"),
+        ]
+        for pattern, role in mapping:
+            if re.search(pattern, text, re.I):
+                return role
+        return None
+
+    def _guess_person_name_from_title(self, title: str) -> str | None:
+        chunks = [part.strip() for part in re.split(r"[-|,]", title or "") if part.strip()]
+        for chunk in chunks:
+            if re.search(r"\b(owner|director|ceo|founder|linkedin)\b", chunk, re.I):
+                continue
+            if re.match(r"^[A-Z][a-z]+(?:\s+[A-Z][a-z]+){0,3}$", chunk):
+                return chunk
+        return None
 
     async def find_potential_contacts(self, lead) -> dict[str, list[str]]:
         pages = await self._fetch_site_pages(lead.website)
@@ -182,11 +237,17 @@ class ContactIntelligenceService:
         text = soup.get_text(" ", strip=True)
         hrefs = "\n".join(anchor.get("href") or "" for anchor in soup.select("a[href]"))
         emails = sorted({email for email in EMAIL_PATTERN.findall(text)})
-        generic_emails = sorted([email for email in emails if any(pattern.search(email) for pattern in INVALID_EMAIL_AS_PERSONAL)])
+        generic_emails = sorted([
+            email
+            for email in emails
+            if any(pattern.search(email) for pattern in INVALID_EMAIL_AS_PERSONAL)
+            and not any(pattern.search(email) for pattern in EXCLUDED_GENERAL_EMAIL_PATTERNS)
+        ])
         phones = sorted({self._normalize_phone(phone) for phone in PHONE_PATTERN.findall(text) if self._normalize_phone(phone)})
         whatsapp = self._extract_whatsapp(text + "\n" + hrefs)
         generic_contacts = []
-        for email in emails:
+        filtered_for_generic = [email for email in emails if not any(pattern.search(email) for pattern in EXCLUDED_GENERAL_EMAIL_PATTERNS)]
+        for email in filtered_for_generic:
             generic_contacts.append(f"email:{email}")
         for phone in phones:
             generic_contacts.append(f"phone:{phone}")

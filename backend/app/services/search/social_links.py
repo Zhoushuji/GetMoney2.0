@@ -24,6 +24,7 @@ LINKEDIN_VALID_COMPANY = re.compile(
     re.I,
 )
 LINKEDIN_INVALID = re.compile(r"linkedin\.com/(?:in|jobs|posts|pulse)/", re.I)
+LINKEDIN_PERSON_LIKE_COMPANY_SLUG = re.compile(r"(?:private|limited|ltd|pvt|llc|inc|group|official|company|industr(?:y|ies)|agrotech)", re.I)
 URL_PATTERN = re.compile(r"https?://[^\s\"'<>]+", re.I)
 SCAN_PATHS = ["/", "/contact", "/contact-us", "/about", "/about-us"]
 
@@ -67,11 +68,16 @@ def extract_facebook(text: str) -> str | None:
 
 def extract_linkedin_company(text: str) -> str | None:
     for url in find_all_urls(text):
-        if LINKEDIN_INVALID.search(url):
-            continue
         match = LINKEDIN_VALID_COMPANY.search(url)
         if match:
             return f"https://www.linkedin.com/company/{match.group(1)}"
+        # fallback for sites that expose organization pages under /in/<org-slug>
+        if "linkedin.com/in/" in url.lower():
+            slug = url.rstrip("/").split("/")[-1]
+            if slug and LINKEDIN_PERSON_LIKE_COMPANY_SLUG.search(slug):
+                return f"https://www.linkedin.com/in/{slug}"
+        if LINKEDIN_INVALID.search(url):
+            continue
     return None
 
 
