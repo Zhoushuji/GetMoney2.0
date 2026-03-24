@@ -1,5 +1,6 @@
 import re
 from dataclasses import dataclass
+from urllib.parse import urljoin
 
 import httpx
 from bs4 import BeautifulSoup
@@ -27,6 +28,7 @@ EMAIL_PATTERN = re.compile(r"[A-Z0-9._%+-]+@[A-Z0-9.-]+\.[A-Z]{2,}", re.I)
 PHONE_PATTERN = re.compile(r"(?:\+\d[\d\s()-]{8,}\d)")
 WA_ME_PATTERN = re.compile(r"wa\.me/(\d{10,15})", re.I)
 WA_API_PATTERN = re.compile(r"api\.whatsapp\.com/send\?phone=(\d{10,15})", re.I)
+CONTACT_SCAN_PATHS = ["/", "/about", "/about-us", "/team", "/leadership", "/contact", "/contact-us"]
 
 
 
@@ -38,14 +40,27 @@ class ContactIntelligenceService:
         return BeautifulSoup(html, "html.parser")
 
     async def find_contacts(self, lead) -> list[ContactRead]:
-        html = await self._fetch_html(lead.website)
-        soup = self._soup_from_html(html) if html else None
+        pages = await self._fetch_site_pages(lead.website)
+        combined_html = "\n".join(html for _, html in pages)
+        soup = self._soup_from_html(combined_html) if combined_html else None
         company_name = lead.company_name or ""
+        source_urls = [url for url, _ in pages]
 
         linkedin_people = self._extract_linkedin_people(soup, company_name)
         verified_people = self._verify_people(linkedin_people, company_name)
-        contact = self._build_contact(lead, verified_people, soup)
+        contact = self._build_contact(lead, verified_people, soup, source_urls=source_urls)
         return [contact] if contact else []
+
+    async def _fetch_site_pages(self, website: str | None) -> list[tuple[str, str]]:
+        if not website:
+            return []
+        pages: list[tuple[str, str]] = []
+        for path in CONTACT_SCAN_PATHS:
+            page_url = urljoin(website, path)
+            html = await self._fetch_html(page_url)
+            if html:
+                pages.append((page_url, html))
+        return pages
 
     async def _fetch_html(self, url: str | None) -> str | None:
         if not url:
@@ -98,29 +113,28 @@ class ContactIntelligenceService:
             verified.append(person)
         return sorted(verified, key=lambda item: item.get("priority") or 999)
 
-    def _build_contact(self, lead, verified_people: list[dict], soup: BeautifulSoup | None) -> ContactRead | None:
+    def _build_contact(self, lead, verified_people: list[dict], soup: BeautifulSoup | None, source_urls: list[str] | None = None) -> ContactRead | None:
         potential_contacts = self._extract_potential_contacts(lead.website, soup)
         chosen = verified_people[0] if verified_people else None
+        if chosen is None:
+            return None
 
         personal_email = None
         work_email = None
         phone = None
-        whatsapp = potential_contacts.get("whatsapp", [None])[0]
-        if chosen:
-            first, _, last = (chosen.get("person_name") or "").partition(" ")
-            for email in potential_contacts.get("emails", []):
-                local = email.split("@", 1)[0].lower()
-                if any(pattern.search(local + "@") for pattern in INVALID_EMAIL_AS_PERSONAL):
-                    continue
-                if first.lower() in local or (last and last.lower() in local):
-                    personal_email = email
-                    break
-            if not personal_email:
-                work_email = next(iter(potential_contacts.get("emails", [])), None)
-            phone = next(iter(potential_contacts.get("phones", [])), None)
-
-        if chosen is None and not any(potential_contacts.values()):
-            return None
+        whatsapp_list = potential_contacts.get("whatsapp") or []
+        whatsapp = whatsapp_list[0] if whatsapp_list else None
+        first, _, last = (chosen.get("person_name") or "").partition(" ")
+        for email in potential_contacts.get("emails", []):
+            local = email.split("@", 1)[0].lower()
+            if any(pattern.search(local + "@") for pattern in INVALID_EMAIL_AS_PERSONAL):
+                continue
+            if first.lower() in local or (last and last.lower() in local):
+                personal_email = email
+                break
+        if not personal_email:
+            work_email = next(iter(potential_contacts.get("emails", [])), None)
+        phone = next(iter(potential_contacts.get("phones", [])), None)
 
         return ContactRead(
             id=uuid4(),
@@ -134,7 +148,7 @@ class ContactIntelligenceService:
             phone=phone,
             whatsapp=whatsapp,
             potential_contacts={"items": potential_contacts.get("all", [])} if potential_contacts.get("all") else None,
-            source_urls=[lead.website] if lead.website else [],
+            source_urls=source_urls or ([lead.website] if lead.website else []),
             verified_at=None,
         )
 

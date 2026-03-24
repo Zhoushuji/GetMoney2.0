@@ -1,4 +1,5 @@
 from datetime import datetime, timezone
+import logging
 from uuid import UUID, uuid4
 
 from fastapi import APIRouter
@@ -9,6 +10,7 @@ from app.schemas.task import TaskCreateResponse
 from app.workers.lead_tasks import enrich_contacts_task
 
 router = APIRouter(prefix="/contacts", tags=["contacts"])
+logger = logging.getLogger(__name__)
 
 
 def _find_lead(lead_id: str):
@@ -50,7 +52,20 @@ async def enrich_contacts(payload: ContactEnrichRequest) -> TaskCreateResponse:
         _update_lead_contact_status(lead, "pending")
         lead_ids.append(str(lead_id))
 
-    enrich_contacts_task.delay(lead_ids=lead_ids, enrich_task_id=str(task_id))
+    try:
+        enrich_contacts_task.delay(lead_ids=lead_ids, enrich_task_id=str(task_id))
+    except Exception as exc:
+        for lead_id in lead_ids:
+            lead = lead_lookup.get(lead_id)
+            if lead:
+                _update_lead_contact_status(lead, "failed", error=str(exc))
+                logger.exception(
+                    "contacts enrich dispatch failed: lead_id=%s website=%s exception_type=%s exception_message=%s",
+                    lead_id,
+                    getattr(lead, "website", None),
+                    type(exc).__name__,
+                    str(exc),
+                )
     return TaskCreateResponse(task_id=task_id)
 
 

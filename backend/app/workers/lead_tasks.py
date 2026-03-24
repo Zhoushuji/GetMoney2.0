@@ -1,4 +1,5 @@
 import asyncio
+import logging
 from uuid import UUID
 
 from celery.exceptions import SoftTimeLimitExceeded
@@ -6,6 +7,8 @@ from celery.exceptions import SoftTimeLimitExceeded
 from app.api.v1.leads import CONTACTS, LEADS
 from app.services.contact.pipeline import ContactPipeline
 from app.workers.celery_app import celery_app
+
+logger = logging.getLogger(__name__)
 
 
 def _find_lead_by_id(lead_id: str):
@@ -39,6 +42,14 @@ def _save_contacts(lead_id: str, contacts: list) -> None:
         lead.potential_contacts = contact.potential_contacts
 
 
+def _save_potential_contacts(lead_id: str, potential_contacts: list[dict]) -> None:
+    lead = _find_lead_by_id(lead_id)
+    if not lead:
+        return
+    items = [f"{item.get('type')}:{item.get('value')}" for item in potential_contacts if item.get("type") and item.get("value")]
+    lead.potential_contacts = {"items": sorted(set(items))} if items else None
+
+
 @celery_app.task(
     bind=True,
     name="workers.lead_tasks.enrich_contacts_task",
@@ -60,11 +71,22 @@ def enrich_contacts_task(self, lead_ids: list[str], enrich_task_id: str):
             if result.core_contacts:
                 _save_contacts(lead_id, result.core_contacts)
                 _update_contact_status(lead_id, "done")
+            elif result.potential_contacts:
+                _save_potential_contacts(lead_id, result.potential_contacts)
+                _update_contact_status(lead_id, "no_data")
             else:
                 _update_contact_status(lead_id, "no_data")
         except SoftTimeLimitExceeded:
+            logger.warning("contact enrichment timeout: lead_id=%s website=%s", lead_id, getattr(lead, "website", None))
             _update_contact_status(lead_id, "timeout")
         except Exception as exc:
+            logger.exception(
+                "contact enrichment failed: lead_id=%s website=%s exception_type=%s exception_message=%s",
+                lead_id,
+                getattr(lead, "website", None),
+                type(exc).__name__,
+                str(exc),
+            )
             _update_contact_status(lead_id, "failed", error=str(exc))
 
     return {"task_id": enrich_task_id, "lead_ids": lead_ids, "status": "completed"}

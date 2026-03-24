@@ -42,3 +42,22 @@ def test_contact_service_rejects_generic_personal_email_and_keeps_potential_cont
     assert contact.personal_email == 'jane.doe@apogeeagrotech.com'
     assert 'email:info@apogeeagrotech.com' in (contact.potential_contacts or {}).get('items', [])
     assert contact.whatsapp == '+919876543210'
+
+
+def test_contact_service_safe_whatsapp_access_with_empty_list():
+    service = ContactIntelligenceService()
+    soup = BeautifulSoup(
+        '''
+        <html><body>
+        <a href="https://www.linkedin.com/in/jane-doe">Jane Doe</a>
+        <div>Jane Doe Chief Executive Officer Apogee Agrotech</div>
+        <div>jane.doe@apogeeagrotech.com</div>
+        </body></html>
+        ''',
+        'html.parser',
+    )
+    lead = type('Lead', (), {'id': __import__('uuid').uuid4(), 'website': 'https://apogeeagrotech.com', 'company_name': 'Apogee Agrotech'})
+    people = service._verify_people(service._extract_linkedin_people(soup, lead.company_name), lead.company_name)
+    contact = service._build_contact(lead, people, soup)
+    assert contact is not None
+    assert contact.whatsapp is None

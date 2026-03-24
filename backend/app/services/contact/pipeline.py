@@ -33,11 +33,23 @@ class ContactPipeline:
     async def _find_potential_contacts(self, lead) -> list[dict]:
         try:
             async with asyncio.timeout(15):
-                html = await self.intelligence._fetch_html(lead.website)
-                if not html:
+                pages = await self.intelligence._fetch_site_pages(lead.website)
+                if not pages:
                     return []
-                soup = self.intelligence._soup_from_html(html)
-                potentials = self.intelligence._extract_potential_contacts(lead.website, soup)
-                return [{"type": key, "value": value} for key, values in potentials.items() for value in values if key != "all"]
+                aggregated: list[dict] = []
+                seen: set[tuple[str, str]] = set()
+                for page_url, html in pages:
+                    soup = self.intelligence._soup_from_html(html)
+                    potentials = self.intelligence._extract_potential_contacts(lead.website, soup)
+                    for key, values in potentials.items():
+                        if key == "all":
+                            continue
+                        for value in values:
+                            token = (key, value)
+                            if token in seen:
+                                continue
+                            seen.add(token)
+                            aggregated.append({"type": key, "value": value, "source_url": page_url})
+                return aggregated
         except asyncio.TimeoutError:
             return []
