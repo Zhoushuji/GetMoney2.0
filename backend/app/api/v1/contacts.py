@@ -173,7 +173,11 @@ async def enrich_contacts(payload: ContactEnrichRequest) -> TaskCreateResponse:
         lead = lead_lookup.get(str(lead_id))
         if not lead:
             continue
-        _set_dual_status(lead, "pending", "pending")
+        _set_dual_status(
+            lead,
+            "running" if payload.mode in {"all", "decision_maker"} else getattr(lead, "decision_maker_status", "pending"),
+            "running" if payload.mode in {"all", "general_contact"} else getattr(lead, "general_contact_status", "pending"),
+        )
         lead_ids.append(str(lead_id))
 
     try:

@@ -190,7 +190,9 @@ export function LeadDiscoveryPage() {
         general_emails: statusResponse.data.potential_contacts?.general_emails,
         potential_contacts: statusResponse.data.potential_contacts?.items ? { items: statusResponse.data.potential_contacts.items } : row.potential_contacts,
       } : row));
-      const completed = ['done', 'no_data', 'timeout', 'failed'].includes(decisionStatus) && ['done', 'no_data', 'timeout', 'failed'].includes(generalStatus);
+      const decisionDone = ['done', 'no_data', 'timeout', 'failed'].includes(decisionStatus);
+      const generalDone = ['done', 'no_data', 'timeout', 'failed'].includes(generalStatus);
+      const completed = mode === 'decision_maker' ? decisionDone : mode === 'general_contact' ? generalDone : (decisionDone && generalDone);
       if (completed) return;
     }
     setRows((current) => current.map((row) => row.id === leadId ? { ...row, decision_maker_status: 'timeout', general_contact_status: 'timeout' } : row));
