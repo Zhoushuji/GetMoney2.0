@@ -184,6 +184,35 @@ async def _fetch_search_results(payload: LeadSearchRequest) -> list[dict]:
     return collected
 
 
+async def _run_lead_search_task(task_id: UUID, payload: LeadSearchRequest) -> None:
+    task = TASKS.get(str(task_id))
+    if not task:
+        return
+    try:
+        task["status"] = "running"
+        task["updated_at"] = datetime.now(timezone.utc)
+        results = await _fetch_search_results(payload)
+        confirmed_leads = len(results) if payload.target_count is None else min(len(results), payload.target_count)
+        total = max(len(results), confirmed_leads)
+        now = datetime.now(timezone.utc)
+        LEADS[str(task_id)] = [LeadRead(id=uuid4(), task_id=task_id, created_at=now, **item) for item in results[:confirmed_leads]]
+        task.update({
+            "status": "completed",
+            "progress": 100,
+            "total": total,
+            "completed": total,
+            "confirmed_leads": confirmed_leads,
+            "stopped_early": payload.target_count is not None and confirmed_leads >= payload.target_count,
+            "updated_at": now,
+        })
+    except Exception as exc:
+        task.update({
+            "status": "failed",
+            "updated_at": datetime.now(timezone.utc),
+            "error": str(exc),
+        })
+
+
 def build_task_status(task: dict) -> TaskStatusResponse:
     now = datetime.now(timezone.utc)
     leads = LEADS.get(str(task["id"]), [])
@@ -230,25 +259,20 @@ def _style_workbook(sheet) -> None:
 async def create_lead_search(payload: LeadSearchRequest) -> TaskCreateResponse:
     task_id = uuid4()
     now = datetime.now(timezone.utc)
-    results = await _fetch_search_results(payload)
-    confirmed_leads = len(results) if payload.target_count is None else min(len(results), payload.target_count)
-    total = max(len(results), confirmed_leads)
     TASKS[str(task_id)] = {
         "id": task_id,
-        "status": "completed",
-        "progress": 100,
-        "total": total,
-        "completed": total,
-        "confirmed_leads": confirmed_leads,
+        "status": "running",
+        "progress": 0,
+        "total": payload.target_count or 0,
+        "completed": 0,
+        "confirmed_leads": 0,
         "target_count": payload.target_count,
-        "stopped_early": payload.target_count is not None and confirmed_leads >= payload.target_count,
+        "stopped_early": False,
         "created_at": now,
         "updated_at": now,
     }
-    LEADS[str(task_id)] = [
-        LeadRead(id=uuid4(), task_id=task_id, created_at=now, **item)
-        for item in results[:confirmed_leads]
-    ]
+    LEADS[str(task_id)] = []
+    asyncio.create_task(_run_lead_search_task(task_id, payload.model_copy(deep=True)))
     return TaskCreateResponse(task_id=task_id)
 
 
