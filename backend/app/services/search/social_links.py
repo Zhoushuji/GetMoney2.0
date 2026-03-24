@@ -22,7 +22,7 @@ FACEBOOK_VALID_PATTERN = re.compile(
 LINKEDIN_VALID_COMPANY = re.compile(r"https?://(?:[a-z]{2,3}\.)?linkedin\.com/company/([a-zA-Z0-9_-]+)/?$", re.I)
 LINKEDIN_INVALID = re.compile(r"linkedin\.com/(?:in|jobs|posts|pulse)/", re.I)
 URL_PATTERN = re.compile(r"https?://[^\s\"'<>]+", re.I)
-CONTACT_PATHS = ["/", "/contact", "/contact-us", "/kontakt", "/kontakty", "/get-in-touch", "/reach-us"]
+SCAN_PATHS = ["/", "/contact", "/contact-us", "/kontakt", "/kontakty"]
 
 
 def find_all_urls(text: str) -> list[str]:
@@ -49,38 +49,43 @@ def extract_linkedin_company(text: str) -> str | None:
     return None
 
 
-async def _fetch_soup(url: str, timeout: float = 5.0) -> BeautifulSoup | None:
+async def _fetch_html(url: str, timeout: float = 5.0) -> str | None:
     try:
         async with httpx.AsyncClient(timeout=timeout, follow_redirects=True) as client:
             response = await client.get(url, headers={"User-Agent": "Mozilla/5.0 LeadGenBot/1.0"})
             response.raise_for_status()
-            return BeautifulSoup(response.text, "html.parser")
+            return response.text
     except Exception:
         return None
 
 
+def _extract_urls_from_html(html: str) -> set[str]:
+    urls = set(re.findall(r'<a[^>]+href=["\']([^"\']+)["\']', html, re.I))
+    urls.update(re.findall(r'data-(?:href|url|link)=["\']([^"\']+)["\']', html, re.I))
+    urls.update(re.findall(r'(?:fb(?:Url|_url|Link)|facebook(?:Url|Link))\s*[:=]\s*["\']([^"\']+)["\']', html, re.I))
+    urls.update(re.findall(r'<meta[^>]+content=["\']([^"\']*facebook\.com[^"\']*)["\']', html, re.I))
+    urls.update(re.findall(r'<meta[^>]+content=["\']([^"\']*linkedin\.com[^"\']*)["\']', html, re.I))
+    return urls
+
+
 async def scrape_social_from_website(website: str, homepage_soup: BeautifulSoup | None) -> dict[str, str | None]:
-    linkedin = None
-    if homepage_soup is not None:
-        homepage_links = [urljoin(website, href) for href in [a.get("href") for a in homepage_soup.select("a[href]")] if href]
-        linkedin = extract_linkedin_company("\n".join(homepage_links))
+    for path in SCAN_PATHS:
+        page_url = urljoin(website, path)
+        if path == "/" and homepage_soup is not None:
+            html = str(homepage_soup)
+        else:
+            try:
+                html = await asyncio.wait_for(_fetch_html(page_url, timeout=5.0), timeout=5.0)
+            except Exception:
+                html = None
+        if not html:
+            continue
 
-    async def scan_page(path: str) -> str | None:
-        url = urljoin(website, path)
-        soup = homepage_soup if path == "/" and homepage_soup is not None else await _fetch_soup(url, timeout=5.0)
-        if soup is None:
-            return None
-        hrefs = [urljoin(url, href) for href in [a.get("href") for a in soup.select("a[href]")] if href]
-        text = soup.get_text(" ", strip=True)
-        return extract_facebook("\n".join(hrefs) + "\n" + text)
+        urls_found = _extract_urls_from_html(html)
+        normalized = "\n".join(urljoin(page_url, u) for u in urls_found)
+        fb = extract_facebook(normalized)
+        li = extract_linkedin_company(normalized)
+        if fb or li:
+            return {"facebook": fb, "linkedin": li}
 
-    facebook = None
-    for path in CONTACT_PATHS:
-        try:
-            facebook = await asyncio.wait_for(scan_page(path), timeout=5.0)
-        except Exception:
-            facebook = None
-        if facebook:
-            break
-
-    return {"facebook": facebook, "linkedin": linkedin}
+    return {"facebook": None, "linkedin": None}

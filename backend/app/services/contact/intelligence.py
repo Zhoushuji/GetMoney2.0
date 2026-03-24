@@ -34,9 +34,12 @@ class ContactIntelligenceService:
     def __init__(self) -> None:
         self.classifier = TitleClassifier()
 
+    def _soup_from_html(self, html: str):
+        return BeautifulSoup(html, "html.parser")
+
     async def find_contacts(self, lead) -> list[ContactRead]:
         html = await self._fetch_html(lead.website)
-        soup = BeautifulSoup(html, "html.parser") if html else None
+        soup = self._soup_from_html(html) if html else None
         company_name = lead.company_name or ""
 
         linkedin_people = self._extract_linkedin_people(soup, company_name)

@@ -83,8 +83,15 @@ class CompanyNameExtractor:
         fetch_page: Callable[[str, float], Awaitable[BeautifulSoup | None]],
     ) -> tuple[str, str | None]:
         aggregated_text: list[str] = []
+        parsed = urlparse(website)
+        lang_prefix = self._detect_lang_prefix(parsed.path)
+        paths_to_try = list(self.ABOUT_PATHS)
+        if lang_prefix:
+            prefixed = [f"{lang_prefix}{p}" for p in self.ABOUT_PATHS if not p.startswith(lang_prefix)]
+            paths_to_try = prefixed + paths_to_try
+
         start = asyncio.get_event_loop().time()
-        for path in self.ABOUT_PATHS:
+        for path in paths_to_try:
             if asyncio.get_event_loop().time() - start > 20:
                 break
             url = urljoin(website, path)
@@ -159,6 +166,12 @@ class CompanyNameExtractor:
 
     def _is_valid(self, candidate: str) -> bool:
         return bool(candidate and len(candidate) >= 3 and not INVALID_PATTERN.fullmatch(candidate))
+
+    def _detect_lang_prefix(self, path: str) -> str | None:
+        match = re.match(r"^/(en|de|fr|pl|es|it)(?:/|$)", path or "", re.I)
+        if match:
+            return f"/{match.group(1).lower()}"
+        return None
 
     def _domain_brand(self, website: str) -> str:
         host = urlparse(website).netloc.removeprefix("www.")
