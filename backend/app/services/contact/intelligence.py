@@ -40,16 +40,41 @@ class ContactIntelligenceService:
         return BeautifulSoup(html, "html.parser")
 
     async def find_contacts(self, lead) -> list[ContactRead]:
+        return await self.find_decision_makers(lead)
+
+    async def find_decision_makers(self, lead) -> list[ContactRead]:
         pages = await self._fetch_site_pages(lead.website)
         combined_html = "\n".join(html for _, html in pages)
         soup = self._soup_from_html(combined_html) if combined_html else None
         company_name = lead.company_name or ""
         source_urls = [url for url, _ in pages]
+        potential_contacts = self._extract_potential_contacts(lead.website, soup)
 
         linkedin_people = self._extract_linkedin_people(soup, company_name)
         verified_people = self._verify_people(linkedin_people, company_name)
-        contact = self._build_contact(lead, verified_people, soup, source_urls=source_urls)
+        contact = self._build_contact(lead, verified_people, potential_contacts, source_urls=source_urls)
         return [contact] if contact else []
+
+    async def find_potential_contacts(self, lead) -> dict[str, list[str]]:
+        pages = await self._fetch_site_pages(lead.website)
+        merged = {"emails": set(), "generic_emails": set(), "phones": set(), "whatsapp": set(), "all": set(), "source_urls": []}
+        for page_url, html in pages:
+            soup = self._soup_from_html(html)
+            extracted = self._extract_potential_contacts(lead.website, soup)
+            merged["emails"].update(extracted.get("emails", []))
+            merged["generic_emails"].update(extracted.get("generic_emails", []))
+            merged["phones"].update(extracted.get("phones", []))
+            merged["whatsapp"].update(extracted.get("whatsapp", []))
+            merged["all"].update(extracted.get("all", []))
+            merged["source_urls"].append(page_url)
+        return {
+            "emails": sorted(merged["emails"]),
+            "generic_emails": sorted(merged["generic_emails"]),
+            "phones": sorted(merged["phones"]),
+            "whatsapp": sorted(merged["whatsapp"]),
+            "all": sorted(merged["all"]),
+            "source_urls": merged["source_urls"],
+        }
 
     async def _fetch_site_pages(self, website: str | None) -> list[tuple[str, str]]:
         if not website:
@@ -113,8 +138,7 @@ class ContactIntelligenceService:
             verified.append(person)
         return sorted(verified, key=lambda item: item.get("priority") or 999)
 
-    def _build_contact(self, lead, verified_people: list[dict], soup: BeautifulSoup | None, source_urls: list[str] | None = None) -> ContactRead | None:
-        potential_contacts = self._extract_potential_contacts(lead.website, soup)
+    def _build_contact(self, lead, verified_people: list[dict], potential_contacts: dict[str, list[str]], source_urls: list[str] | None = None) -> ContactRead | None:
         chosen = verified_people[0] if verified_people else None
         if chosen is None:
             return None
@@ -147,7 +171,7 @@ class ContactIntelligenceService:
             linkedin_personal_url=chosen.get("linkedin_personal_url") if chosen else None,
             phone=phone,
             whatsapp=whatsapp,
-            potential_contacts={"items": potential_contacts.get("all", [])} if potential_contacts.get("all") else None,
+            potential_contacts=None,
             source_urls=source_urls or ([lead.website] if lead.website else []),
             verified_at=None,
         )
@@ -158,6 +182,7 @@ class ContactIntelligenceService:
         text = soup.get_text(" ", strip=True)
         hrefs = "\n".join(anchor.get("href") or "" for anchor in soup.select("a[href]"))
         emails = sorted({email for email in EMAIL_PATTERN.findall(text)})
+        generic_emails = sorted([email for email in emails if any(pattern.search(email) for pattern in INVALID_EMAIL_AS_PERSONAL)])
         phones = sorted({self._normalize_phone(phone) for phone in PHONE_PATTERN.findall(text) if self._normalize_phone(phone)})
         whatsapp = self._extract_whatsapp(text + "\n" + hrefs)
         generic_contacts = []
@@ -167,7 +192,7 @@ class ContactIntelligenceService:
             generic_contacts.append(f"phone:{phone}")
         for number in whatsapp:
             generic_contacts.append(f"whatsapp:{number}")
-        return {"emails": emails, "phones": phones, "whatsapp": whatsapp, "all": generic_contacts}
+        return {"emails": emails, "generic_emails": generic_emails, "phones": phones, "whatsapp": whatsapp, "all": generic_contacts}
 
     def _extract_whatsapp(self, text: str) -> list[str]:
         numbers = {f"+{match}" for match in WA_ME_PATTERN.findall(text)}

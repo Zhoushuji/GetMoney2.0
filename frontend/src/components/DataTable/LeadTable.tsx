@@ -6,6 +6,8 @@ export type LeadRow = {
   linkedin_url?: string;
   country?: string;
   contact_status: 'pending' | 'running' | 'done' | 'failed' | 'no_data' | 'timeout' | string;
+  decision_maker_status?: 'pending' | 'running' | 'done' | 'failed' | 'no_data' | 'timeout' | string;
+  general_contact_status?: 'pending' | 'running' | 'done' | 'failed' | 'no_data' | 'timeout' | string;
   contact_name?: string;
   contact_title?: string;
   linkedin_personal_url?: string;
@@ -14,6 +16,7 @@ export type LeadRow = {
   phone?: string;
   whatsapp?: string;
   potential_contacts?: { items?: string[] } | null;
+  general_emails?: string[] | null;
 };
 
 type Props = {
@@ -25,7 +28,9 @@ type Props = {
   total: number;
   onToggleRow: (leadId: string) => void;
   onToggleAll: () => void;
-  onEnrichOne: (leadId: string) => void;
+  onEnrichDecisionMakers: (leadId: string) => void;
+  onEnrichGeneralContacts: (leadId: string) => void;
+  onEnrichAllContacts: (leadId: string) => void;
   onPageChange: (page: number) => void;
   onPageSizeChange: (pageSize: number) => void;
 };
@@ -39,25 +44,28 @@ function renderDomain(url?: string) {
   }
 }
 
-export function LeadTable({ rows, selectedIds, step2Unlocked, page, pageSize, total, onToggleRow, onToggleAll, onEnrichOne, onPageChange, onPageSizeChange }: Props) {
+export function LeadTable({ rows, selectedIds, step2Unlocked, page, pageSize, total, onToggleRow, onToggleAll, onEnrichDecisionMakers, onEnrichGeneralContacts, onEnrichAllContacts, onPageChange, onPageSizeChange }: Props) {
   const allSelected = rows.length > 0 && rows.every((row) => selectedIds.includes(row.id));
   const totalPages = Math.max(1, Math.ceil(total / pageSize));
 
-  const renderContactAction = (row: LeadRow) => {
-    if (!step2Unlocked) return <span className="muted-text">待解锁</span>;
-    if (row.contact_status === 'running') return <span className="status-inline"><span className="spinner-inline" /> 挖掘中...</span>;
-    if (row.contact_status === 'done') return <span className="done-text">✓ 已完成</span>;
-    if (row.contact_status === 'no_data') return <span className="no-data-text">— 暂无数据</span>;
-    if (row.contact_status === 'timeout') return <button className="button secondary timeout-btn" type="button" onClick={() => onEnrichOne(row.id)}>⏱ 超时 重试</button>;
-    if (row.contact_status === 'failed') return <button className="button secondary timeout-btn" type="button" onClick={() => onEnrichOne(row.id)}>⚠ 重试</button>;
-    return <button className="button secondary" type="button" onClick={() => onEnrichOne(row.id)}>查找联系人</button>;
+  const renderStatusTag = (status?: string) => {
+    if (status === 'running') return <span className="status-inline"><span className="spinner-inline" /> 进行中</span>;
+    if (status === 'done') return <span className="done-text">✓ 完成</span>;
+    if (status === 'no_data') return <span className="no-data-text">— 无数据</span>;
+    if (status === 'timeout') return <span className="no-data-text">⏱ 超时</span>;
+    if (status === 'failed') return <span className="no-data-text">⚠ 失败</span>;
+    return <span className="muted-text">待执行</span>;
   };
 
-  const renderCellValue = (row: LeadRow, key: keyof LeadRow) => {
-    if ((row.contact_status === 'no_data' || row.contact_status === 'timeout') && ['contact_name', 'contact_title', 'linkedin_personal_url', 'personal_email', 'work_email', 'phone', 'whatsapp'].includes(key as string)) {
-      return '—';
-    }
-    return row[key] as string | undefined;
+  const renderContactAction = (row: LeadRow) => {
+    if (!step2Unlocked) return <span className="muted-text">待解锁</span>;
+    return (
+      <div style={{ display: 'flex', gap: 6, flexWrap: 'wrap' }}>
+        <button className="button secondary" type="button" onClick={() => onEnrichDecisionMakers(row.id)}>查找关键人</button>
+        <button className="button secondary" type="button" onClick={() => onEnrichGeneralContacts(row.id)}>抓取潜在联系方式</button>
+        <button className="button secondary" type="button" onClick={() => onEnrichAllContacts(row.id)}>全部查找</button>
+      </div>
+    );
   };
 
   return (
@@ -74,6 +82,8 @@ export function LeadTable({ rows, selectedIds, step2Unlocked, page, pageSize, to
               <th>LinkedIn</th>
               <th>国家</th>
               <th className="sticky-col sticky-action">联系人操作</th>
+              <th>关键人状态</th>
+              <th>潜在联系方式状态</th>
               <th className="col-contact-name">联系人姓名</th>
               <th className="col-title">职位</th>
               <th>个人LinkedIn</th>
@@ -95,14 +105,16 @@ export function LeadTable({ rows, selectedIds, step2Unlocked, page, pageSize, to
                 <td>{row.linkedin_url ? <a href={row.linkedin_url} target="_blank" rel="noreferrer" title={row.linkedin_url}>{row.linkedin_url}</a> : '-'}</td>
                 <td>{row.country ?? '-'}</td>
                 <td className="sticky-col sticky-action">{renderContactAction(row)}</td>
-                <td className="col-contact-name">{renderCellValue(row, 'contact_name') || '-'}</td>
-                <td className="col-title">{renderCellValue(row, 'contact_title') || '-'}</td>
-                <td>{renderCellValue(row, 'linkedin_personal_url') ? <a href={renderCellValue(row, 'linkedin_personal_url')} target="_blank" rel="noreferrer" title={renderCellValue(row, 'linkedin_personal_url')}>{renderCellValue(row, 'linkedin_personal_url')}</a> : '-'}</td>
-                <td className="col-email">{renderCellValue(row, 'personal_email') || '-'}</td>
-                <td className="col-email">{renderCellValue(row, 'work_email') || '-'}</td>
-                <td>{renderCellValue(row, 'phone') || '-'}</td>
-                <td>{renderCellValue(row, 'whatsapp') || '-'}</td>
-                <td title={(row.potential_contacts?.items || []).join('\n')}>{row.potential_contacts?.items?.length ? row.potential_contacts.items.join(' / ') : '-'}</td>
+                <td>{renderStatusTag(row.decision_maker_status)}</td>
+                <td>{renderStatusTag(row.general_contact_status)}</td>
+                <td className="col-contact-name">{row.contact_name || '-'}</td>
+                <td className="col-title">{row.contact_title || '-'}</td>
+                <td>{row.linkedin_personal_url ? <a href={row.linkedin_personal_url} target="_blank" rel="noreferrer" title={row.linkedin_personal_url}>{row.linkedin_personal_url}</a> : '-'}</td>
+                <td className="col-email">{row.personal_email || '-'}</td>
+                <td className="col-email">{row.work_email || '-'}</td>
+                <td>{row.phone || '-'}</td>
+                <td>{row.whatsapp || '-'}</td>
+                <td title={(row.potential_contacts?.items || []).join('\n')}>{row.potential_contacts?.items?.length ? row.potential_contacts.items.join(' / ') : (row.general_emails?.join(' / ') || '-')}</td>
               </tr>
             ))}
           </tbody>

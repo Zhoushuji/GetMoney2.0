@@ -158,6 +158,8 @@ async def _build_lead_item(runtime: SearchRuntime, payload: LeadSearchRequest, s
         "continent": None,
         "source": "google",
         "contact_status": "pending",
+        "decision_maker_status": "pending",
+        "general_contact_status": "pending",
         "contact_name": None,
         "contact_title": None,
         "linkedin_personal_url": None,
@@ -166,6 +168,7 @@ async def _build_lead_item(runtime: SearchRuntime, payload: LeadSearchRequest, s
         "phone": None,
         "whatsapp": None,
         "potential_contacts": None,
+        "general_emails": [],
         "raw_data": {
             "search_title": serper_item.get("title"),
             "search_snippet": serper_item.get("snippet"),

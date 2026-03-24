@@ -6,6 +6,7 @@ from pydantic import BaseModel
 
 class ContactEnrichRequest(BaseModel):
     lead_ids: list[UUID]
+    mode: str = "all"
 
 
 class ContactEnrichAllRequest(BaseModel):
@@ -37,7 +38,9 @@ class ContactListResponse(BaseModel):
 
 class ContactStatusResponse(BaseModel):
     lead_id: UUID
-    contact_status: str
+    decision_maker_status: str
+    general_contact_status: str
     contacts: list[ContactRead] = []
+    potential_contacts: dict | None = None
     error: str | None = None
     error_details: dict | None = None

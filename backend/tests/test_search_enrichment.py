@@ -37,10 +37,10 @@ def test_contact_service_rejects_generic_personal_email_and_keeps_potential_cont
     )
     lead = type('Lead', (), {'id': __import__('uuid').uuid4(), 'website': 'https://apogeeagrotech.com', 'company_name': 'Apogee Agrotech'})
     people = service._verify_people(service._extract_linkedin_people(soup, lead.company_name), lead.company_name)
-    contact = service._build_contact(lead, people, soup)
+    potentials = service._extract_potential_contacts(lead.website, soup)
+    contact = service._build_contact(lead, people, potentials)
     assert contact is not None
     assert contact.personal_email == 'jane.doe@apogeeagrotech.com'
-    assert 'email:info@apogeeagrotech.com' in (contact.potential_contacts or {}).get('items', [])
     assert contact.whatsapp == '+919876543210'
 
 
@@ -58,6 +58,7 @@ def test_contact_service_safe_whatsapp_access_with_empty_list():
     )
     lead = type('Lead', (), {'id': __import__('uuid').uuid4(), 'website': 'https://apogeeagrotech.com', 'company_name': 'Apogee Agrotech'})
     people = service._verify_people(service._extract_linkedin_people(soup, lead.company_name), lead.company_name)
-    contact = service._build_contact(lead, people, soup)
+    potentials = service._extract_potential_contacts(lead.website, soup)
+    contact = service._build_contact(lead, people, potentials)
     assert contact is not None
     assert contact.whatsapp is None

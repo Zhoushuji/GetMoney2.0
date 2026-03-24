@@ -23,6 +23,8 @@ class LeadRead(BaseModel):
     continent: str | None = None
     source: str | None = None
     contact_status: str
+    decision_maker_status: str = "pending"
+    general_contact_status: str = "pending"
     contact_name: str | None = None
     contact_title: str | None = None
     linkedin_personal_url: str | None = None
@@ -31,6 +33,7 @@ class LeadRead(BaseModel):
     phone: str | None = None
     whatsapp: str | None = None
     potential_contacts: dict[str, list[str]] | None = None
+    general_emails: list[str] | None = None
     raw_data: dict | None = None
     created_at: datetime
 
