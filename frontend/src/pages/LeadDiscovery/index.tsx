@@ -33,6 +33,13 @@ type ContactResponse = {
   }>;
 };
 
+type ContactStatusResponse = {
+  lead_id: string;
+  contact_status: 'pending' | 'running' | 'done' | 'no_data' | 'timeout' | 'failed' | string;
+  contacts: ContactResponse['contacts'];
+  error?: string | null;
+};
+
 const CONTACT_CONCURRENCY = 5;
 
 function StepCard({ step, title, status }: { step: string; title: string; status: 'pending' | 'active' | 'done' | 'locked' }) {
@@ -152,16 +159,33 @@ export function LeadDiscoveryPage() {
     }));
   };
 
+  const triggerContactEnrich = async (leadId: string) => {
+    setRows((current) => current.map((row) => row.id === leadId ? { ...row, contact_status: 'running' } : row));
+    await apiClient.post('/contacts/enrich', { lead_ids: [leadId] });
+
+    const startedAt = Date.now();
+    while (Date.now() - startedAt < 150_000) {
+      await new Promise((resolve) => setTimeout(resolve, 3000));
+      const statusResponse = await apiClient.get<ContactStatusResponse>(`/contacts/status/${leadId}`);
+      const status = statusResponse.data.contact_status;
+      if (status === 'done') {
+        mergeContact(leadId, statusResponse.data.contacts[0]);
+        return;
+      }
+      if (status === 'no_data' || status === 'timeout' || status === 'failed') {
+        setRows((current) => current.map((row) => row.id === leadId ? { ...row, contact_status: status } : row));
+        return;
+      }
+      setRows((current) => current.map((row) => row.id === leadId ? { ...row, contact_status: status } : row));
+    }
+    setRows((current) => current.map((row) => row.id === leadId ? { ...row, contact_status: 'timeout' } : row));
+  };
+
   const runContactQueue = async (leadIds: string[]) => {
     const queue = [...leadIds];
     while (queue.length > 0) {
       const batch = queue.splice(0, CONTACT_CONCURRENCY);
-      setRows((current) => current.map((row) => batch.includes(row.id) ? { ...row, contact_status: 'running' } : row));
-      await apiClient.post('/contacts/enrich', { lead_ids: batch });
-      await Promise.all(batch.map(async (leadId) => {
-        const response = await apiClient.get<ContactResponse>(`/contacts?lead_id=${leadId}`);
-        mergeContact(leadId, response.data.contacts[0]);
-      }));
+      await Promise.all(batch.map((leadId) => triggerContactEnrich(leadId)));
     }
   };
 

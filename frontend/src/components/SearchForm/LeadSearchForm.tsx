@@ -173,7 +173,7 @@ export function LeadSearchForm({ isSubmitting, onSubmit }: Props) {
                     {group.items.map((entry) => (
                       <label key={entry.code} className="checkbox-card compact">
                         <input type="checkbox" checked={selectedCountries.includes(entry.code)} onChange={() => toggleCountry(entry.code)} />
-                        <span>{entry.name_zh}（{entry.name_en}）</span>
+                        <span className={!entry.name_zh ? "missing-zh" : undefined}>{entry.name_zh ? `${entry.name_zh}（${entry.name_en}）` : `[缺失中文名]（${entry.name_en}）`}</span>
                       </label>
                     ))}
                   </div>

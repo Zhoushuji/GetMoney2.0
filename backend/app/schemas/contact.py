@@ -33,3 +33,10 @@ class ContactRead(BaseModel):
 
 class ContactListResponse(BaseModel):
     contacts: list[ContactRead]
+
+
+class ContactStatusResponse(BaseModel):
+    lead_id: UUID
+    contact_status: str
+    contacts: list[ContactRead] = []
+    error: str | None = None

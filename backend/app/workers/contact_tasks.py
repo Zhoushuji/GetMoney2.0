@@ -34,6 +34,7 @@ def enrich_single_lead(self, lead_id: str):
         _update_lead_contact_status(lead_id, "failed")
         return {"lead_id": lead_id, "status": "failed", "error": "lead not found"}
 
+    _update_lead_contact_status(lead_id, "running")
     try:
         contacts = asyncio.run(service.find_contacts(lead))
         if not contacts:

@@ -19,31 +19,51 @@ class ExtractedCompanyName:
 
 class CompanyNameExtractor:
     ABOUT_PATHS = [
-        "/about", "/about-us", "/about_us", "/company",
-        "/o-nas", "/o-firmie", "/uber-uns", "/ueber-uns",
-        "/qui-sommes-nous", "/chi-siamo", "/sobre-nosotros", "/o-kompanii",
+        "/company", "/about", "/about-us", "/about_us", "/ueber-uns", "/uber-uns", "/unternehmen",
+        "/o-nas", "/o-firmie", "/qui-sommes-nous", "/chi-siamo", "/sobre-nosotros",
+    ]
+    LEGAL_SUFFIXES = [
+        "GmbH", "AG", "KG", "OHG", "GmbH & Co. KG",
+        "Ltd", "Limited", "LLC", "Inc", "Corp",
+        "S.A.", "S.L.", "S.r.l.", "S.p.A.",
+        "B.V.", "N.V.",
+        "Sp. z o.o.",
+        "Pty Ltd", "Pty. Ltd.",
+        "Pvt Ltd", "Pvt. Ltd.",
     ]
 
-    async def extract(self, serper_item: dict, website: str, homepage_soup: BeautifulSoup | None, fetch_page: Callable[[str, float], Awaitable[BeautifulSoup | None]] | None = None) -> ExtractedCompanyName:
+    async def extract(
+        self,
+        serper_item: dict,
+        website: str,
+        homepage_soup: BeautifulSoup | None,
+        fetch_page: Callable[[str, float], Awaitable[BeautifulSoup | None]] | None = None,
+    ) -> ExtractedCompanyName:
         candidates: list[tuple[str | None, str]] = [
             (self._extract_knowledge_graph_name(serper_item), "knowledge_graph"),
             (self._extract_sitelink_name(serper_item), "sitelinks"),
         ]
 
-        if homepage_soup is not None:
-            candidates.extend([
-                (self._extract_meta(homepage_soup, "property", "og:site_name"), "og:site_name"),
-                (self._extract_meta(homepage_soup, "name", "application-name"), "application_name"),
-                (self._extract_title(homepage_soup), "title"),
-            ])
-
+        about_text = ""
         if fetch_page is not None:
-            about_name = await self._extract_from_about_pages(website, fetch_page)
+            about_text, about_name = await self._extract_from_about_pages(website, fetch_page)
             if about_name:
-                candidates.append(about_name)
+                candidates.append((about_name, "about_page"))
 
         if homepage_soup is not None:
-            candidates.append((self._extract_h1(homepage_soup), "h1"))
+            homepage_meta = self._extract_meta(homepage_soup, "property", "og:site_name")
+            homepage_app = self._extract_meta(homepage_soup, "name", "application-name")
+            homepage_title = self._extract_title(homepage_soup)
+            homepage_h1 = self._extract_h1(homepage_soup)
+            if homepage_title and about_text:
+                homepage_title = self.try_append_legal_suffix(homepage_title, about_text)
+
+            candidates.extend([
+                (homepage_meta, "og:site_name"),
+                (homepage_app, "application_name"),
+                (homepage_title, "title"),
+                (homepage_h1, "h1"),
+            ])
 
         candidates.extend([
             (serper_item.get("title"), "search_title"),
@@ -57,8 +77,16 @@ class CompanyNameExtractor:
 
         return ExtractedCompanyName(value=self._domain_brand(website), source="domain_fallback")
 
-    async def _extract_from_about_pages(self, website: str, fetch_page: Callable[[str, float], Awaitable[BeautifulSoup | None]]) -> tuple[str | None, str] | None:
+    async def _extract_from_about_pages(
+        self,
+        website: str,
+        fetch_page: Callable[[str, float], Awaitable[BeautifulSoup | None]],
+    ) -> tuple[str, str | None]:
+        aggregated_text: list[str] = []
+        start = asyncio.get_event_loop().time()
         for path in self.ABOUT_PATHS:
+            if asyncio.get_event_loop().time() - start > 20:
+                break
             url = urljoin(website, path)
             try:
                 soup = await asyncio.wait_for(fetch_page(url, timeout=5.0), timeout=5.0)
@@ -66,15 +94,23 @@ class CompanyNameExtractor:
                 continue
             if soup is None:
                 continue
-            for extractor, source in [
-                (lambda s: self._extract_meta(s, "property", "og:site_name"), "about_og:site_name"),
-                (self._extract_h1, "about_h1"),
-                (self._extract_title, "about_title"),
-            ]:
+            aggregated_text.append(soup.get_text(" ", strip=True))
+            for extractor in (
+                lambda s: self._extract_meta(s, "property", "og:site_name"),
+                self._extract_h1,
+                self._extract_title,
+            ):
                 value = extractor(soup)
                 if value:
-                    return value, source
-        return None
+                    return " ".join(aggregated_text), value
+        return " ".join(aggregated_text), None
+
+    def try_append_legal_suffix(self, name_from_step6: str, about_page_text: str) -> str:
+        for suffix in self.LEGAL_SUFFIXES:
+            pattern = rf"\b{re.escape(name_from_step6)}\s+{re.escape(suffix)}\b"
+            if re.search(pattern, about_page_text, re.I):
+                return f"{name_from_step6} {suffix}"
+        return name_from_step6
 
     def clean_title(self, raw: str) -> str:
         candidate = re.sub(r"\s+", " ", raw or "").strip()

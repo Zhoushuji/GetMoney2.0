@@ -1,3 +1,4 @@
+import asyncio
 from bs4 import BeautifulSoup
 
 from app.services.contact.intelligence import ContactIntelligenceService
@@ -11,7 +12,7 @@ def test_company_name_extractor_prefers_meta_and_cleans_title():
         'html.parser',
     )
     item = {"title": "Buy Cheap Valves | Example"}
-    extracted = CompanyNameExtractor().extract(item, 'https://www.apogeeagrotech.com', soup)
+    extracted = asyncio.run(CompanyNameExtractor().extract(item, 'https://www.apogeeagrotech.com', soup))
     assert extracted.value == 'Apogee Agrotech'
     assert extracted.source == 'og:site_name'
 
