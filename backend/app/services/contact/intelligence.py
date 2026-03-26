@@ -42,7 +42,7 @@ class ContactIntelligenceService:
     def __init__(self) -> None:
         self.classifier = TitleClassifier()
         self.serper = SerperClient()
-        self.linkedin_people_finder = LinkedInPeopleFinder(classifier=self.classifier)
+        self.linkedin_people_finder = LinkedInPeopleFinder(classifier=self.classifier, serper_client=self.serper)
 
     def _soup_from_html(self, html: str):
         return BeautifulSoup(html, "html.parser")
@@ -57,15 +57,21 @@ class ContactIntelligenceService:
         soup = self._soup_from_html(combined_html) if combined_html else None
         source_urls = [url for url, _ in pages]
         potential_contacts = self._extract_potential_contacts(lead.website, soup)
+        website_people = self._extract_linkedin_people(soup, company_name)
+        verified_website_people = self._verify_people(website_people, company_name, lead.website)
+        if verified_website_people:
+            contact = self._build_contact(lead, verified_website_people, potential_contacts, source_urls=source_urls)
+            return [contact] if contact else []
+
         linkedin_company_url = getattr(lead, "linkedin_url", None) or self._extract_linkedin_company_url(pages)
         linkedin_people = self._merge_people(
-            self._extract_linkedin_people(soup, company_name),
+            website_people,
             await self.linkedin_people_finder.find_key_people(company_name, linkedin_company_url, lead.website)
             if (company_name or linkedin_company_url or lead.website)
             else [],
         )
 
-        if not linkedin_people and company_name:
+        if not linkedin_people and company_name and not linkedin_company_url:
             linkedin_people = self._merge_people(linkedin_people, await self._search_linkedin_people_via_google(company_name))
         trusted_people = [person for person in linkedin_people if self._is_trusted_source(person)]
         verified_people = self._verify_people(trusted_people or linkedin_people, company_name, lead.website)
@@ -75,33 +81,31 @@ class ContactIntelligenceService:
         return [contact] if contact else []
 
     async def _search_linkedin_people_via_google(self, company_name: str) -> list[dict]:
-        role_terms = ["owner", "\"managing director\"", "ceo", "founder"]
         people: list[dict] = []
         seen: set[str] = set()
-        for role in role_terms:
-            query = f'"{company_name}" site:linkedin.com/in {role}'
-            try:
-                result = await self.serper.search(query=query, gl="us", hl="en", num=5)
-            except Exception:
+        query = f'"{company_name}" site:linkedin.com/in (owner OR "managing director" OR ceo OR founder)'
+        try:
+            result = await self.serper.search(query=query, gl="us", hl="en", num=6)
+        except Exception:
+            return people
+        for item in result.get("organic", []):
+            link = item.get("link", "")
+            if "linkedin.com/in/" not in link or link in seen:
                 continue
-            for item in result.get("organic", []):
-                link = item.get("link", "")
-                if "linkedin.com/in/" not in link or link in seen:
-                    continue
-                seen.add(link)
-                title = item.get("title", "") or ""
-                snippet = item.get("snippet", "") or ""
-                role_title = self._guess_role_title_from_text(f"{title} {snippet}")
-                person_name = self._guess_person_name_from_title(title)
-                people.append({
-                    "person_name": person_name,
-                    "title": role_title,
-                    "linkedin_personal_url": link,
-                    "source": "legacy_google",
-                    "source_url": link,
-                    "source_context": f"{title} {snippet}".strip(),
-                    "source_rank": 3,
-                })
+            seen.add(link)
+            title = item.get("title", "") or ""
+            snippet = item.get("snippet", "") or ""
+            role_title = self._guess_role_title_from_text(f"{title} {snippet}")
+            person_name = self._guess_person_name_from_title(title)
+            people.append({
+                "person_name": person_name,
+                "title": role_title,
+                "linkedin_personal_url": link,
+                "source": "legacy_google",
+                "source_url": link,
+                "source_context": f"{title} {snippet}".strip(),
+                "source_rank": 3,
+            })
         return people
 
     def _guess_role_title_from_text(self, text: str) -> str | None:

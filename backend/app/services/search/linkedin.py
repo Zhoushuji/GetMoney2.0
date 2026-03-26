@@ -5,7 +5,7 @@ from typing import Optional
 from urllib.parse import urljoin, urlparse
 
 from app.services.contact.classifier import TitleClassifier
-from app.services.search.serper import call_serper
+from app.services.search.serper import SerperClient
 
 USER_AGENTS = [
     "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36",
@@ -20,6 +20,10 @@ TITLE_SEARCH_GROUPS = [
     ["Procurement Manager", "Purchasing Manager", "Sourcing Manager", "Head of Procurement", "Supply Chain Manager"],
 ]
 LEGAL_SUFFIXES = {"gmbh", "ag", "kg", "ltd", "limited", "llc", "inc", "corp", "co", "bv", "b.v", "srl", "s.a"}
+MAX_COMPANY_TERMS = 2
+MAX_SERPER_RESULTS = 6
+LEADERSHIP_QUERY = 'site:linkedin.com/in/ "{term}" (CEO OR "Chief Executive Officer" OR Founder OR Owner OR President OR "Managing Director" OR "Executive Director" OR "General Manager" OR COO OR "Chief Operating Officer")'
+PROCUREMENT_QUERY = 'site:linkedin.com/in/ "{term}" (Procurement OR Purchasing OR Sourcing OR "Head of Procurement" OR "Supply Chain")'
 
 
 def _random_ua() -> str:
@@ -27,8 +31,9 @@ def _random_ua() -> str:
 
 
 class LinkedInPeopleFinder:
-    def __init__(self, classifier: Optional[TitleClassifier] = None):
+    def __init__(self, classifier: Optional[TitleClassifier] = None, serper_client: Optional[SerperClient] = None):
         self.classifier = classifier or TitleClassifier()
+        self.serper = serper_client or SerperClient()
 
     async def find_key_people(
         self,
@@ -36,22 +41,24 @@ class LinkedInPeopleFinder:
         linkedin_company_url: Optional[str] = None,
         company_website: Optional[str] = None,
     ) -> list[dict]:
-        company_terms = self._build_company_terms(company_name, company_website)
+        company_terms = self._top_company_terms(self._build_company_terms(company_name, company_website))
+        if linkedin_company_url:
+            trusted_people = await self._path_b(linkedin_company_url)
+            if trusted_people:
+                return self._deduplicate_and_filter(trusted_people)
         if not linkedin_company_url and company_terms:
             linkedin_company_url = await self._discover_company_url(company_terms)
-        tasks: list[asyncio.Task] = []
-        if company_terms:
-            tasks.append(asyncio.create_task(self._path_a(company_terms)))
-            tasks.append(asyncio.create_task(self._path_c(company_terms)))
         if linkedin_company_url:
-            tasks.append(asyncio.create_task(self._path_b(linkedin_company_url)))
-        if not tasks:
+            trusted_people = await self._path_b(linkedin_company_url)
+            if trusted_people:
+                return self._deduplicate_and_filter(trusted_people)
+        if not company_terms:
             return []
-        results = await asyncio.gather(*tasks, return_exceptions=True)
-        all_people: list[dict] = []
-        for r in results:
-            if isinstance(r, list):
-                all_people.extend(r)
+
+        leadership_people = await self._path_a(company_terms)
+        all_people = leadership_people
+        if len(leadership_people) < 2:
+            all_people.extend(await self._path_c(company_terms))
         return self._deduplicate_and_filter(all_people)
 
     def _build_company_terms(self, company_name: str, company_website: Optional[str]) -> list[str]:
@@ -79,6 +86,19 @@ class LinkedInPeopleFinder:
             deduped.append(term)
         return deduped
 
+    def _top_company_terms(self, company_terms: list[str]) -> list[str]:
+        compact_seen: set[str] = set()
+        prioritized: list[str] = []
+        for term in company_terms:
+            compact = re.sub(r"[^a-z0-9]+", "", term.lower())
+            if compact in compact_seen:
+                continue
+            compact_seen.add(compact)
+            prioritized.append(term)
+            if len(prioritized) >= MAX_COMPANY_TERMS:
+                break
+        return prioritized
+
     def _is_useful_company_term(self, value: str | None) -> bool:
         if not value:
             return False
@@ -98,10 +118,10 @@ class LinkedInPeopleFinder:
         for term in company_terms:
             for query in (
                 f'site:linkedin.com/company/ "{term}"',
-                f'site:linkedin.com/company "{term}"',
+                f'"{term}" "linkedin.com/company"',
             ):
                 try:
-                    result = await call_serper(query, num=10)
+                    result = await self.serper.search(query, num=5)
                 except Exception:
                     continue
                 for item in result.get("organic", []):
@@ -118,26 +138,25 @@ class LinkedInPeopleFinder:
 
     async def _path_a(self, company_terms: list[str]) -> list[dict]:
         candidates: list[dict] = []
-        for group in TITLE_SEARCH_GROUPS:
-            primary = group[0]
-            for company_term in company_terms:
-                for q in [f'site:linkedin.com/in/ "{company_term}" "{primary}"', f'"{company_term}" "{primary}" linkedin profile']:
-                    try:
-                        result = await call_serper(q, num=10)
-                        for item in result.get("organic", []):
-                            title = item.get("title", "") or ""
-                            snippet = item.get("snippet", "") or ""
-                            link = item.get("link", "") or ""
-                            person = self._parse_serper_item(title, snippet, link)
-                            if person:
-                                person["source"] = "path_a"
-                                person["source_url"] = person.get("linkedin_personal_url")
-                                person["source_context"] = f"{title} {snippet}".strip()
-                                person["source_rank"] = 2
-                                candidates.append(person)
-                        await asyncio.sleep(0.3)
-                    except Exception:
-                        continue
+        for company_term in company_terms:
+            query = LEADERSHIP_QUERY.format(term=company_term)
+            try:
+                result = await self.serper.search(query, num=MAX_SERPER_RESULTS)
+            except Exception:
+                continue
+            for item in result.get("organic", []):
+                title = item.get("title", "") or ""
+                snippet = item.get("snippet", "") or ""
+                link = item.get("link", "") or ""
+                person = self._parse_serper_item(title, snippet, link)
+                if person:
+                    person["source"] = "path_a"
+                    person["source_url"] = person.get("linkedin_personal_url")
+                    person["source_context"] = f"{title} {snippet}".strip()
+                    person["source_rank"] = 2
+                    candidates.append(person)
+            if len(candidates) >= MAX_SERPER_RESULTS:
+                break
         return candidates
 
     async def _path_b(self, linkedin_company_url: Optional[str]) -> list[dict]:
@@ -181,29 +200,25 @@ class LinkedInPeopleFinder:
 
     async def _path_c(self, company_terms: list[str]) -> list[dict]:
         candidates: list[dict] = []
-        queries = [
-            '(CEO OR "Managing Director" OR "General Manager" OR Founder OR Owner OR President)',
-            '(Procurement OR Purchasing OR Sourcing OR "Supply Chain")',
-        ]
         for company_term in company_terms:
-            for q in queries:
-                query = f'site:linkedin.com/in/ "{company_term}" {q}'
-                try:
-                    result = await call_serper(query, num=10)
-                    for item in result.get("organic", []):
-                        title = item.get("title", "") or ""
-                        snippet = item.get("snippet", "") or ""
-                        link = item.get("link", "") or ""
-                        person = self._parse_serper_item(title, snippet, link)
-                        if person:
-                            person["source"] = "path_c"
-                            person["source_url"] = person.get("linkedin_personal_url")
-                            person["source_context"] = f"{title} {snippet}".strip()
-                            person["source_rank"] = 2
-                            candidates.append(person)
-                    await asyncio.sleep(0.3)
-                except Exception:
-                    continue
+            query = PROCUREMENT_QUERY.format(term=company_term)
+            try:
+                result = await self.serper.search(query, num=MAX_SERPER_RESULTS)
+            except Exception:
+                continue
+            for item in result.get("organic", []):
+                title = item.get("title", "") or ""
+                snippet = item.get("snippet", "") or ""
+                link = item.get("link", "") or ""
+                person = self._parse_serper_item(title, snippet, link)
+                if person:
+                    person["source"] = "path_c"
+                    person["source_url"] = person.get("linkedin_personal_url")
+                    person["source_context"] = f"{title} {snippet}".strip()
+                    person["source_rank"] = 2
+                    candidates.append(person)
+            if len(candidates) >= MAX_SERPER_RESULTS:
+                break
         return candidates
 
     async def _extract_from_card(self, card, page_url: str) -> Optional[dict]:

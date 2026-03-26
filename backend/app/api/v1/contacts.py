@@ -51,7 +51,7 @@ def _build_error_details(exc: Exception | None, lead) -> dict | None:
     }
 
 
-async def _enrich_one_lead(lead_id: str, mode: str = "all") -> None:
+async def _enrich_one_lead(lead_id: str, mode: str = "all", service: ContactIntelligenceService | None = None) -> None:
     lead = _find_lead(lead_id)
     if not lead:
         return
@@ -60,7 +60,7 @@ async def _enrich_one_lead(lead_id: str, mode: str = "all") -> None:
         "running" if mode in {"all", "decision_maker"} else getattr(lead, "decision_maker_status", "pending"),
         "running" if mode in {"all", "general_contact"} else getattr(lead, "general_contact_status", "pending"),
     )
-    service = ContactIntelligenceService()
+    service = service or ContactIntelligenceService()
 
     decision_exc: Exception | None = None
     general_exc: Exception | None = None
@@ -146,8 +146,9 @@ async def _run_enrichment_batch(task_id: str, lead_ids: list[str], mode: str = "
         task["updated_at"] = datetime.now(timezone.utc)
         return
     task["status"] = "running"
+    service = ContactIntelligenceService()
     for idx, lead_id in enumerate(lead_ids, start=1):
-        await _enrich_one_lead(lead_id, mode=mode)
+        await _enrich_one_lead(lead_id, mode=mode, service=service)
         task["completed"] = idx
         task["progress"] = int((idx / max(1, len(lead_ids))) * 100)
         task["updated_at"] = datetime.now(timezone.utc)
