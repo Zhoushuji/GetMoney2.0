@@ -1,4 +1,5 @@
 import { FormEvent, useEffect, useMemo, useState } from 'react';
+import { useRef } from 'react';
 
 import { CONTINENTS, LANGUAGE_LABELS, geoData } from '../../data/geo';
 
@@ -14,6 +15,8 @@ export type LeadSearchPayload = {
 type Props = {
   isSubmitting: boolean;
   onSubmit: (payload: LeadSearchPayload) => Promise<void>;
+  initialValues?: Partial<LeadSearchPayload> | null;
+  initialTaskId?: string | null;
 };
 
 type FormErrors = Partial<Record<'product_name' | 'countries' | 'languages' | 'target_count', string>>;
@@ -28,7 +31,7 @@ const CONTINENT_LABELS: Record<string, string> = {
   Oceania: '大洋洲',
 };
 
-export function LeadSearchForm({ isSubmitting, onSubmit }: Props) {
+export function LeadSearchForm({ isSubmitting, onSubmit, initialValues, initialTaskId }: Props) {
   const defaultMode: 'live' | 'demo' = import.meta.env.DEV ? 'demo' : 'live';
   const [productName, setProductName] = useState('industrial valve');
   const [selectedContinents, setSelectedContinents] = useState<string[]>(['Asia']);
@@ -38,6 +41,7 @@ export function LeadSearchForm({ isSubmitting, onSubmit }: Props) {
   const [countrySearch, setCountrySearch] = useState('');
   const [targetCountInput, setTargetCountInput] = useState('');
   const [errors, setErrors] = useState<FormErrors>({});
+  const appliedTaskIdRef = useRef<string | null>(null);
 
   const groupedCountries = useMemo(() => selectedContinents.map((continent) => {
     const items = geoData
@@ -73,6 +77,19 @@ export function LeadSearchForm({ isSubmitting, onSubmit }: Props) {
       return next.length > 0 ? next : [ENGLISH_CODE].filter((language) => availableLanguages.includes(language));
     });
   }, [availableLanguages]);
+
+  useEffect(() => {
+    if (!initialValues) return;
+    if (initialTaskId && appliedTaskIdRef.current === initialTaskId) return;
+    setProductName(initialValues.product_name ?? '');
+    setSelectedContinents(initialValues.continents ?? []);
+    setSelectedCountries((initialValues.countries ?? []).map((value) => geoData.find((entry) => entry.name_en === value || entry.code === value)?.code ?? value));
+    setSelectedLanguages(initialValues.languages ?? [ENGLISH_CODE]);
+    setSearchMode((initialValues.mode as 'live' | 'demo') ?? defaultMode);
+    setTargetCountInput(initialValues.target_count ? String(initialValues.target_count) : '');
+    setErrors({});
+    appliedTaskIdRef.current = initialTaskId ?? null;
+  }, [defaultMode, initialTaskId, initialValues]);
 
   const toggleContinent = (continent: string) => {
     setSelectedContinents((current) => {
@@ -236,7 +253,7 @@ export function LeadSearchForm({ isSubmitting, onSubmit }: Props) {
           <label className="field config-field">
             <span>目标客户数量（可选）</span>
             <input className={`input ${errors.target_count ? 'input-error' : ''}`} type="number" min={1} step={1} inputMode="numeric" value={targetCountInput} onChange={(e) => setTargetCountInput(e.target.value)} placeholder="留空 = 搜索全部" />
-            {errors.target_count ? <small className="field-error">{errors.target_count}</small> : <small className="field-help">默认先按目标数量的 2 倍抓取候选，不够时再按 1 倍逐步扩容。</small>}
+            {errors.target_count ? <small className="field-error">{errors.target_count}</small> : <small className="field-help">默认先按目标数量的 2 倍抓取候选，不够时再按 1 倍逐步扩容；无法证明属于目标市场的企业会被严格过滤。</small>}
           </label>
           <div className="field config-field">
             <span>搜索模式</span>

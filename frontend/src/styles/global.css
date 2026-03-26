@@ -69,6 +69,19 @@ button, input, select { font: inherit; }
 .button:disabled { opacity:0.6; cursor:not-allowed; }
 .tag { padding:6px 10px; border:1px solid var(--color-border); background:white; }
 .text-button { border:none; background:transparent; color: var(--color-primary); cursor:pointer; padding:0; }
+.history-task-list { display:grid; grid-template-columns: repeat(auto-fit, minmax(220px, 1fr)); gap:12px; }
+.history-task-card {
+  display:grid;
+  gap:6px;
+  padding:14px;
+  text-align:left;
+  border:1px solid var(--color-border);
+  border-radius:12px;
+  background:#fff;
+}
+.history-task-card strong { font-size:14px; }
+.history-task-card span, .history-task-card small { color: var(--color-muted); }
+.history-task-card.is-active { border-color: var(--color-accent); box-shadow: 0 0 0 1px rgba(37, 99, 235, 0.12); }
 
 .mini-actions { display:flex; gap:6px; }
 .mini-btn { height:26px; padding:0 10px; font-size:12px; font-weight:500; border-radius:3px; cursor:pointer; background:transparent; }

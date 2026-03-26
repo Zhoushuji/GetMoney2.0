@@ -13,17 +13,40 @@ USER_AGENTS = [
     "Mozilla/5.0 (Windows NT 10.0; Win64; x64; rv:121.0) Gecko/20100101 Firefox/121.0",
 ]
 
-TITLE_SEARCH_GROUPS = [
-    ["CEO", "Chief Executive Officer", "Founder", "Owner", "President"],
-    ["Managing Director", "Director General", "Executive Director"],
-    ["General Manager", "COO", "Chief Operating Officer"],
-    ["Procurement Manager", "Purchasing Manager", "Sourcing Manager", "Head of Procurement", "Supply Chain Manager"],
-]
 LEGAL_SUFFIXES = {"gmbh", "ag", "kg", "ltd", "limited", "llc", "inc", "corp", "co", "bv", "b.v", "srl", "s.a"}
 MAX_COMPANY_TERMS = 2
 MAX_SERPER_RESULTS = 6
 LEADERSHIP_QUERY = 'site:linkedin.com/in/ "{term}" (CEO OR "Chief Executive Officer" OR Founder OR Owner OR President OR "Managing Director" OR "Executive Director" OR "General Manager" OR COO OR "Chief Operating Officer")'
 PROCUREMENT_QUERY = 'site:linkedin.com/in/ "{term}" (Procurement OR Purchasing OR Sourcing OR "Head of Procurement" OR "Supply Chain")'
+COMPANY_DISCOVER_QUERIES = (
+    'site:linkedin.com/company/ "{term}"',
+    '"{term}" "linkedin.com/company"',
+    '"{term}" linkedin company',
+)
+CARD_SELECTORS = [
+    'li.artdeco-list__item',
+    '.org-people__profile-card',
+    '.org-people-profiles-module__profile-item',
+    '.scaffold-finite-scroll__content li',
+    '[data-test-id="people-list"] li',
+]
+NAME_SELECTORS = [
+    '.artdeco-entity-lockup__title a',
+    '.artdeco-entity-lockup__title',
+    '[data-test-id="member-name"]',
+    '.org-people-profile-card__profile-title',
+    '.org-people__profile-card-title',
+    'a[href*="/in/"]',
+]
+TITLE_SELECTORS = [
+    '.artdeco-entity-lockup__subtitle',
+    '[data-test-id="member-title"]',
+    '.artdeco-entity-lockup__caption',
+    '.org-people-profile-card__profile-role',
+    '.org-people__profile-card-subtitle',
+    '.org-top-card-summary-info-list__info-item',
+]
+LINK_SELECTORS = ['a[href*="/in/"]']
 
 
 def _random_ua() -> str:
@@ -34,6 +57,7 @@ class LinkedInPeopleFinder:
     def __init__(self, classifier: Optional[TitleClassifier] = None, serper_client: Optional[SerperClient] = None):
         self.classifier = classifier or TitleClassifier()
         self.serper = serper_client or SerperClient()
+        self.last_diagnostics: dict[str, object] = {}
 
     async def find_key_people(
         self,
@@ -41,15 +65,19 @@ class LinkedInPeopleFinder:
         linkedin_company_url: Optional[str] = None,
         company_website: Optional[str] = None,
     ) -> list[dict]:
+        self.last_diagnostics = {"path_b": {"status": "not_attempted"}, "company_url": linkedin_company_url}
         company_terms = self._top_company_terms(self._build_company_terms(company_name, company_website))
         if linkedin_company_url:
-            trusted_people = await self._path_b(linkedin_company_url)
+            trusted_people, diagnostics = await self._path_b(linkedin_company_url)
+            self.last_diagnostics["path_b"] = diagnostics
             if trusted_people:
                 return self._deduplicate_and_filter(trusted_people)
         if not linkedin_company_url and company_terms:
             linkedin_company_url = await self._discover_company_url(company_terms)
+            self.last_diagnostics["company_url"] = linkedin_company_url
         if linkedin_company_url:
-            trusted_people = await self._path_b(linkedin_company_url)
+            trusted_people, diagnostics = await self._path_b(linkedin_company_url)
+            self.last_diagnostics["path_b"] = diagnostics
             if trusted_people:
                 return self._deduplicate_and_filter(trusted_people)
         if not company_terms:
@@ -116,12 +144,9 @@ class LinkedInPeopleFinder:
 
     async def _discover_company_url(self, company_terms: list[str]) -> Optional[str]:
         for term in company_terms:
-            for query in (
-                f'site:linkedin.com/company/ "{term}"',
-                f'"{term}" "linkedin.com/company"',
-            ):
+            for query in COMPANY_DISCOVER_QUERIES:
                 try:
-                    result = await self.serper.search(query, num=5)
+                    result = await self.serper.search(query.format(term=term), num=8)
                 except Exception:
                     continue
                 for item in result.get("organic", []):
@@ -135,6 +160,15 @@ class LinkedInPeopleFinder:
         if not match:
             return None
         return f"https://www.linkedin.com/company/{match.group(1)}"
+
+    def _normalize_title(self, title: str | None) -> str:
+        normalized = re.sub(r"\s+", " ", (title or "")).strip()
+        normalized = re.sub(r"\s+(?:at|@)\s+.+$", "", normalized, flags=re.I)
+        normalized = normalized.replace("＆", "&")
+        normalized = re.sub(r"\bco[\s-]?founder\s*&\s*ceo\b", "Co-Founder CEO", normalized, flags=re.I)
+        normalized = re.sub(r"\bfounder\s*/\s*ceo\b", "Founder CEO", normalized, flags=re.I)
+        normalized = re.sub(r"\bceo\s*/\s*founder\b", "CEO Founder", normalized, flags=re.I)
+        return normalized
 
     async def _path_a(self, company_terms: list[str]) -> list[dict]:
         candidates: list[dict] = []
@@ -159,9 +193,12 @@ class LinkedInPeopleFinder:
                 break
         return candidates
 
-    async def _path_b(self, linkedin_company_url: Optional[str]) -> list[dict]:
+    async def _path_b(self, linkedin_company_url: Optional[str]) -> tuple[list[dict], dict]:
+        diagnostics = {"status": "not_attempted", "source_url": linkedin_company_url}
         if not linkedin_company_url:
-            return []
+            diagnostics["status"] = "missing_company_url"
+            return [], diagnostics
+
         candidates: list[dict] = []
         try:
             from playwright.async_api import async_playwright
@@ -169,20 +206,44 @@ class LinkedInPeopleFinder:
             people_url = linkedin_company_url.rstrip("/") + "/people/"
             async with async_playwright() as p:
                 browser = await p.chromium.launch(headless=True)
-                context = await browser.new_context(user_agent=_random_ua(), viewport={"width": 1280, "height": 800})
+                context = await browser.new_context(user_agent=_random_ua(), viewport={"width": 1280, "height": 900})
                 page = await context.new_page()
+                parsed_any_card = False
+                saw_any_card = False
+
                 for page_num in range(1, 4):
                     url = people_url + (f"?page={page_num}" if page_num > 1 else "")
                     try:
-                        await page.goto(url, timeout=15000, wait_until="networkidle")
-                        await page.wait_for_selector('li.artdeco-list__item,.org-people__item', timeout=8000)
+                        await page.goto(url, timeout=15000, wait_until="domcontentloaded")
+                        await page.wait_for_timeout(1000)
+                        await self._perform_scroll(page)
                     except Exception:
-                        break
-                    items = await page.query_selector_all('li.artdeco-list__item,.org-people__item')
+                        diagnostics["status"] = "timeout"
+                        diagnostics["source_url"] = url
+                        await browser.close()
+                        return candidates, diagnostics
+
+                    page_html = await page.content()
+                    lowered = page_html.lower()
+                    if "authwall" in page.url.lower() or ("sign in" in lowered and "/in/" not in lowered and "/company/" in page.url.lower()):
+                        diagnostics["status"] = "login_wall"
+                        diagnostics["source_url"] = url
+                        await browser.close()
+                        return candidates, diagnostics
+                    if "captcha" in lowered:
+                        diagnostics["status"] = "captcha_or_block"
+                        diagnostics["source_url"] = url
+                        await browser.close()
+                        return candidates, diagnostics
+
+                    items = await self._query_cards(page)
+                    if items:
+                        saw_any_card = True
                     page_found = False
                     for item in items:
                         person = await self._extract_from_card(item, url)
                         if person:
+                            parsed_any_card = True
                             ok, priority = self.classifier.classify(person.get("title", ""))
                             if ok:
                                 person["priority"] = priority
@@ -191,12 +252,46 @@ class LinkedInPeopleFinder:
                                 person["source_rank"] = 0
                                 candidates.append(person)
                                 page_found = True
-                    if not page_found:
+                    if not items:
                         break
+                    if not page_found and page_num >= 2:
+                        break
+
                 await browser.close()
+                if candidates:
+                    diagnostics["status"] = "parsed"
+                elif saw_any_card and not parsed_any_card:
+                    diagnostics["status"] = "selector_miss"
+                elif saw_any_card:
+                    diagnostics["status"] = "no_cards"
+                else:
+                    diagnostics["status"] = "no_cards"
         except Exception:
-            pass
-        return candidates
+            diagnostics["status"] = "selector_miss"
+        return candidates, diagnostics
+
+    async def _perform_scroll(self, page) -> None:
+        for _ in range(3):
+            await page.evaluate("window.scrollBy(0, Math.max(window.innerHeight, 900));")
+            await page.wait_for_timeout(700)
+
+    async def _query_cards(self, page) -> list:
+        collected = []
+        seen = set()
+        for selector in CARD_SELECTORS:
+            try:
+                nodes = await page.query_selector_all(selector)
+            except Exception:
+                continue
+            for node in nodes:
+                token = str(id(node))
+                if token in seen:
+                    continue
+                seen.add(token)
+                collected.append(node)
+            if collected:
+                break
+        return collected
 
     async def _path_c(self, company_terms: list[str]) -> list[dict]:
         candidates: list[dict] = []
@@ -221,16 +316,45 @@ class LinkedInPeopleFinder:
                 break
         return candidates
 
+    async def _extract_first_text(self, card, selectors: list[str]) -> str | None:
+        for selector in selectors:
+            try:
+                node = await card.query_selector(selector)
+            except Exception:
+                continue
+            if not node:
+                continue
+            try:
+                text = (await node.inner_text()).strip()
+            except Exception:
+                continue
+            if text:
+                return text
+        return None
+
+    async def _extract_first_link(self, card, selectors: list[str], page_url: str) -> str | None:
+        for selector in selectors:
+            try:
+                node = await card.query_selector(selector)
+            except Exception:
+                continue
+            if not node:
+                continue
+            try:
+                href = await node.get_attribute("href")
+            except Exception:
+                continue
+            if href:
+                return urljoin(page_url, href)
+        return None
+
     async def _extract_from_card(self, card, page_url: str) -> Optional[dict]:
         try:
-            name_el = await card.query_selector('.artdeco-entity-lockup__title,[data-test-id="member-name"]')
-            person_name = (await name_el.inner_text()).strip() if name_el else ""
-            title_el = await card.query_selector('.artdeco-entity-lockup__subtitle,[data-test-id="member-title"]')
-            job_title = (await title_el.inner_text()).strip() if title_el else ""
-            link_el = await card.query_selector('a[href*="linkedin.com/in/"]')
-            li_url = await link_el.get_attribute("href") if link_el else None
-            if li_url:
-                li_url = urljoin(page_url, li_url)
+            person_name = await self._extract_first_text(card, NAME_SELECTORS)
+            job_title = self._normalize_title(await self._extract_first_text(card, TITLE_SELECTORS))
+            li_url = await self._extract_first_link(card, LINK_SELECTORS, page_url)
+            if li_url and "linkedin.com/in/" not in li_url:
+                li_url = None
             if not person_name or not _is_valid_person_name(person_name):
                 return None
             return {"person_name": person_name, "title": job_title, "linkedin_personal_url": li_url}
@@ -243,12 +367,12 @@ class LinkedInPeopleFinder:
         title = re.sub(r'\s*[\|·]\s*LinkedIn\s*$', '', title, flags=re.I).strip()
         m = re.match(r'^([A-Z][a-z]+(?:\s+[A-Z][a-z]+)+)\s*[-–]\s*(.+?)(?:\s+(?:at|@|–|-)\s+.+)?$', title)
         if m:
-            person_name, job_title = m.group(1).strip(), m.group(2).strip()
+            person_name, job_title = m.group(1).strip(), self._normalize_title(m.group(2).strip())
         else:
             parts = re.split(r'\s*[-–]\s*', title, maxsplit=2)
             if len(parts) < 2:
                 return None
-            person_name, job_title = parts[0].strip(), parts[1].strip()
+            person_name, job_title = parts[0].strip(), self._normalize_title(parts[1].strip())
         if not _is_valid_person_name(person_name):
             return None
         ok, priority = self.classifier.classify(job_title)
@@ -260,9 +384,11 @@ class LinkedInPeopleFinder:
         seen_urls: set[str] = set()
         seen_names: set[tuple] = set()
         result: list[dict] = []
-        for p in people:
-            url = p.get("linkedin_personal_url", "")
-            name_key = (p.get("person_name", "").lower(), p.get("title", "").lower()[:20])
+        for person in people:
+            url = person.get("linkedin_personal_url") or ""
+            normalized_title = self._normalize_title(person.get("title", ""))
+            person["title"] = normalized_title
+            name_key = ((person.get("person_name") or "").lower(), normalized_title.lower()[:40])
             if url and url in seen_urls:
                 continue
             if not url and name_key in seen_names:
@@ -270,15 +396,19 @@ class LinkedInPeopleFinder:
             if url:
                 seen_urls.add(url)
             seen_names.add(name_key)
-            if _is_valid_person_name(p.get("person_name", "")):
-                result.append(p)
-        return sorted(result, key=lambda x: (x.get("source_rank", 9), x.get("priority", 99)))
+            if _is_valid_person_name(person.get("person_name", "")):
+                result.append(person)
+        return sorted(result, key=lambda item: (item.get("source_rank", 9), item.get("priority", 99)))
 
 
 def _is_valid_person_name(name: str) -> bool:
     if not name or len(name) < 3 or len(name) > 60:
         return False
     invalid = [
-        r'^[A-Za-z]+ Contact$', r'^[A-Za-z]+ (Info|Team|Admin|Support|Sales|Enquiry)$', r'^(Contact|Info|Admin|Sales|Support|Hello|General)$', r'^\w{1,2}$', r'^\d+'
+        r'^[A-Za-z]+ Contact$',
+        r'^[A-Za-z]+ (Info|Team|Admin|Support|Sales|Enquiry)$',
+        r'^(Contact|Info|Admin|Sales|Support|Hello|General)$',
+        r'^\w{1,2}$',
+        r'^\d+',
     ]
-    return not any(re.match(p, name, re.I) for p in invalid) and len(name.strip().split()) >= 2
+    return not any(re.match(pattern, name, re.I) for pattern in invalid) and len(name.strip().split()) >= 2

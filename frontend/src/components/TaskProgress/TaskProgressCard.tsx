@@ -5,9 +5,17 @@ type Props = {
   completed: number;
   confirmedLeads: number;
   targetCount: number | null;
+  phase?: string | null;
+  estimatedTotalSeconds?: number | null;
   estimatedRemainingSeconds?: number | null;
   stoppedEarly: boolean;
 };
+
+function formatEta(seconds?: number | null) {
+  if (seconds == null) return '—';
+  if (seconds < 60) return `约 ${Math.max(0, Math.round(seconds))} 秒`;
+  return `约 ${Math.max(1, Math.round(seconds / 60))} 分钟`;
+}
 
 export function TaskProgressCard({
   status,
@@ -16,6 +24,8 @@ export function TaskProgressCard({
   completed,
   confirmedLeads,
   targetCount,
+  phase,
+  estimatedTotalSeconds,
   estimatedRemainingSeconds,
   stoppedEarly,
 }: Props) {
@@ -35,8 +45,10 @@ export function TaskProgressCard({
       </div>
       <div className="progress-meta">
         <span>进度：{progress}%</span>
-        <span>预计剩余：{estimatedRemainingSeconds ? `${estimatedRemainingSeconds}s` : '—'}</span>
+        <span>阶段：{phase || '—'}</span>
+        <span>预计剩余：{formatEta(estimatedRemainingSeconds)}</span>
       </div>
+      {estimatedTotalSeconds != null ? <p className="muted-text">预计总耗时：{formatEta(estimatedTotalSeconds)}</p> : null}
       {targetReached || stoppedEarly ? <p className="success-text">已达到目标数量，搜索已停止。</p> : null}
     </section>
   );

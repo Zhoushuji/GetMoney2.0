@@ -1,6 +1,5 @@
 import asyncio
 import re
-from dataclasses import dataclass
 from urllib.parse import urljoin, urlparse
 
 import httpx
@@ -14,6 +13,8 @@ from app.services.search.linkedin import LinkedInPeopleFinder
 from app.services.search.serper import SerperClient
 
 PHONE_NEAR_WA_WINDOW = 50
+DIAGNOSTIC_FAILED_STATUSES = {"login_wall", "captcha_or_block", "selector_miss"}
+DIAGNOSTIC_TIMEOUT_STATUSES = {"timeout"}
 INVALID_PERSON_NAME_PATTERNS = [
     re.compile(r"^[A-Z][a-z]+ Contact$"),
     re.compile(r"^[A-Z][a-z]+ (Info|Team|Admin|Support|Sales)$"),
@@ -37,6 +38,24 @@ WA_API_PATTERN = re.compile(r"api\.whatsapp\.com/send\?phone=(\d{10,15})", re.I)
 CONTACT_SCAN_PATHS = ["/", "/about", "/about-us", "/team", "/leadership", "/contact", "/contact-us"]
 
 
+class LinkedInPeopleDiagnosticError(Exception):
+    def __init__(self, status: str, details: dict | None = None):
+        self.status = status
+        self.details = details or {}
+        message = self._message_for(status)
+        super().__init__(message)
+
+    @staticmethod
+    def _message_for(status: str) -> str:
+        messages = {
+            "login_wall": "LinkedIn people page hit a login wall",
+            "captcha_or_block": "LinkedIn people page was blocked by captcha",
+            "selector_miss": "LinkedIn people page layout changed and no supported selectors matched",
+            "timeout": "LinkedIn people page timed out",
+        }
+        return messages.get(status, f"LinkedIn people page failed with status={status}")
+
+
 
 class ContactIntelligenceService:
     def __init__(self) -> None:
@@ -51,6 +70,8 @@ class ContactIntelligenceService:
         return await self.find_decision_makers(lead)
 
     async def find_decision_makers(self, lead) -> list[ContactRead]:
+        if self._is_demo_lead(lead):
+            return []
         company_name = lead.company_name or ""
         pages = await self._fetch_site_pages(lead.website)
         combined_html = "\n".join(html for _, html in pages)
@@ -64,12 +85,14 @@ class ContactIntelligenceService:
             return [contact] if contact else []
 
         linkedin_company_url = getattr(lead, "linkedin_url", None) or self._extract_linkedin_company_url(pages)
-        linkedin_people = self._merge_people(
-            website_people,
-            await self.linkedin_people_finder.find_key_people(company_name, linkedin_company_url, lead.website)
-            if (company_name or linkedin_company_url or lead.website)
-            else [],
-        )
+        resolved_linkedin_company_url = linkedin_company_url
+        linkedin_path_diagnostics: dict | None = None
+        linkedin_people_candidates: list[dict] = []
+        if company_name or linkedin_company_url or lead.website:
+            linkedin_people_candidates = await self.linkedin_people_finder.find_key_people(company_name, linkedin_company_url, lead.website)
+            resolved_linkedin_company_url = self.linkedin_people_finder.last_diagnostics.get("company_url") or linkedin_company_url
+            linkedin_path_diagnostics = dict(self.linkedin_people_finder.last_diagnostics.get("path_b") or {})
+        linkedin_people = self._merge_people(website_people, linkedin_people_candidates)
 
         if not linkedin_people and company_name and not linkedin_company_url:
             linkedin_people = self._merge_people(linkedin_people, await self._search_linkedin_people_via_google(company_name))
@@ -78,7 +101,16 @@ class ContactIntelligenceService:
         if trusted_people and not verified_people:
             verified_people = self._verify_people(linkedin_people, company_name, lead.website)
         contact = self._build_contact(lead, verified_people, potential_contacts, source_urls=source_urls)
-        return [contact] if contact else []
+        if contact:
+            return [contact]
+
+        self._raise_for_linkedin_path_failure(
+            linkedin_path_diagnostics,
+            company_name=company_name,
+            website=lead.website,
+            linkedin_company_url=resolved_linkedin_company_url,
+        )
+        return []
 
     async def _search_linkedin_people_via_google(self, company_name: str) -> list[dict]:
         people: list[dict] = []
@@ -130,7 +162,19 @@ class ContactIntelligenceService:
                 return chunk
         return None
 
+    def _normalize_role_title(self, title: str | None) -> str:
+        normalized = re.sub(r"\s+", " ", (title or "")).strip()
+        normalized = re.sub(r"\s+(?:at|@)\s+.+$", "", normalized, flags=re.I)
+        normalized = normalized.replace("＆", "&")
+        normalized = re.sub(r"\bco[\s-]?founder\s*&\s*ceo\b", "Co-Founder & CEO", normalized, flags=re.I)
+        normalized = re.sub(r"\bfounder\s*/\s*ceo\b", "Founder / CEO", normalized, flags=re.I)
+        normalized = re.sub(r"\bceo\s*/\s*founder\b", "CEO / Founder", normalized, flags=re.I)
+        return normalized
+
     async def find_potential_contacts(self, lead) -> dict[str, list[str]]:
+        if self._is_demo_lead(lead):
+            source_urls = [lead.website] if getattr(lead, "website", None) else []
+            return {"emails": [], "generic_emails": [], "phones": [], "whatsapp": [], "all": [], "source_urls": source_urls}
         pages = await self._fetch_site_pages(lead.website)
         merged = {"emails": set(), "generic_emails": set(), "phones": set(), "whatsapp": set(), "all": set(), "source_urls": []}
         for page_url, html in pages:
@@ -247,7 +291,7 @@ class ContactIntelligenceService:
         company_tokens = self._company_tokens(company_name, website)
         for person in people:
             name = person.get("person_name") or ""
-            title = person.get("title") or ""
+            title = self._normalize_role_title(person.get("title") or "")
             linkedin = person.get("linkedin_personal_url") or ""
             source = person.get("source") or ""
             if any(pattern.search(name) for pattern in INVALID_PERSON_NAME_PATTERNS):
@@ -257,6 +301,7 @@ class ContactIntelligenceService:
             is_allowed, priority = self.classifier.classify(title)
             if not is_allowed:
                 continue
+            person["title"] = title
             person["priority"] = priority
             if source not in {"website", "path_b"}:
                 context = f"{name} {title} {linkedin} {person.get('source_context') or ''}".lower()
@@ -296,6 +341,51 @@ class ContactIntelligenceService:
 
     def _is_trusted_source(self, person: dict) -> bool:
         return (person.get("source") or "") in {"website", "path_b"}
+
+    def _is_demo_lead(self, lead) -> bool:
+        raw_data = getattr(lead, "raw_data", None) or {}
+        if raw_data.get("demo_mode"):
+            return True
+        if getattr(lead, "source", None) == "demo":
+            return True
+        website = (getattr(lead, "website", None) or "").strip()
+        if not website:
+            return False
+        parsed = urlparse(website if "://" in website else f"https://{website}")
+        host = (parsed.netloc or parsed.path or "").lower().removeprefix("www.")
+        return host == "example.com" and parsed.path.startswith("/demo/")
+
+    def _raise_for_linkedin_path_failure(
+        self,
+        diagnostics: dict | None,
+        *,
+        company_name: str,
+        website: str | None,
+        linkedin_company_url: str | None,
+    ) -> None:
+        if not diagnostics:
+            return
+        status = (diagnostics.get("status") or "").strip()
+        if status in DIAGNOSTIC_TIMEOUT_STATUSES:
+            raise LinkedInPeopleDiagnosticError(
+                "timeout",
+                {
+                    "company_name": company_name,
+                    "website": website,
+                    "linkedin_company_url": linkedin_company_url,
+                    "linkedin_path_diagnostics": diagnostics,
+                },
+            )
+        if status in DIAGNOSTIC_FAILED_STATUSES:
+            raise LinkedInPeopleDiagnosticError(
+                status,
+                {
+                    "company_name": company_name,
+                    "website": website,
+                    "linkedin_company_url": linkedin_company_url,
+                    "linkedin_path_diagnostics": diagnostics,
+                },
+            )
 
     def _build_contact(self, lead, verified_people: list[dict], potential_contacts: dict[str, list[str]], source_urls: list[str] | None = None) -> ContactRead | None:
         chosen = verified_people[0] if verified_people else None

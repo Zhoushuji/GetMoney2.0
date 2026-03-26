@@ -19,6 +19,18 @@ export type LeadRow = {
   whatsapp?: string;
   potential_contacts?: { items?: string[] } | null;
   general_emails?: string[] | null;
+  raw_data?: {
+    target_country?: string | null;
+    target_country_code?: string | null;
+    country_detection?: {
+      status?: string;
+      detected_country_name?: string | null;
+      target_country_name?: string | null;
+      confidence?: number | null;
+      mismatch_reason?: string | null;
+      evidence?: Array<{ signal?: string; value?: string; weight?: number }>;
+    } | null;
+  } | null;
 };
 
 type Props = {
@@ -59,6 +71,19 @@ function renderLinkLabel(url?: string) {
   }
 }
 
+function renderCountryTooltip(row: LeadRow) {
+  const detection = row.raw_data?.country_detection;
+  if (!detection) return undefined;
+  const lines = [
+    row.raw_data?.target_country ? `目标市场：${row.raw_data.target_country}` : null,
+    detection.detected_country_name ? `识别国家：${detection.detected_country_name}` : null,
+    detection.confidence != null ? `可信度：${Math.round(detection.confidence * 100)}%` : null,
+    ...(detection.evidence ?? []).slice(0, 4).map((item) => `${item.signal || 'evidence'}: ${item.value || '-'}`),
+    detection.mismatch_reason ? `说明：${detection.mismatch_reason}` : null,
+  ].filter(Boolean);
+  return lines.length > 0 ? lines.join('\n') : undefined;
+}
+
 export function LeadTable({ rows, selectedIds, step2Unlocked, page, pageSize, total, onToggleRow, onToggleAll, onEnrichDecisionMakers, onEnrichGeneralContacts, onEnrichAllContacts, onPageChange, onPageSizeChange }: Props) {
   const allSelected = rows.length > 0 && rows.every((row) => selectedIds.includes(row.id));
   const totalPages = Math.max(1, Math.ceil(total / pageSize));
@@ -96,7 +121,7 @@ export function LeadTable({ rows, selectedIds, step2Unlocked, page, pageSize, to
               <th className="col-website">官网</th>
               <th>Facebook</th>
               <th>LinkedIn</th>
-              <th>国家 / 区域</th>
+              <th>识别国家 / 区域</th>
               <th className="sticky-col sticky-action">联系人操作</th>
               <th>关键人状态</th>
               <th>潜在联系方式状态</th>
@@ -142,7 +167,7 @@ export function LeadTable({ rows, selectedIds, step2Unlocked, page, pageSize, to
                     </a>
                   ) : '-'}
                 </td>
-                <td>
+                <td title={renderCountryTooltip(row)}>
                   <div className="location-cell">
                     <strong>{row.country ?? '-'}</strong>
                     <small>{row.continent || '未标注区域'}</small>

@@ -5,6 +5,7 @@ import { useTaskStore } from '../../stores/useTaskStore';
 
 type TaskStatus = {
   id: string;
+  type?: string | null;
   status: string;
   progress: number;
   total: number;
@@ -13,6 +14,13 @@ type TaskStatus = {
   target_count: number | null;
   stopped_early: boolean;
   estimated_remaining_seconds?: number | null;
+  latest_contact_task?: {
+    id: string;
+    status: string;
+    progress: number;
+    mode?: string | null;
+    updated_at?: string | null;
+  } | null;
 };
 
 type LeadItem = {
@@ -114,6 +122,11 @@ export function ContactIntelligencePage() {
     return response.data;
   };
 
+  const fetchTaskDetail = async (id: string) => {
+    const response = await apiClient.get<TaskStatus>(`/tasks/${id}`);
+    return response.data;
+  };
+
   const fetchAllLeads = async (activeTaskId: string) => {
     const pageSize = 200;
     let page = 1;
@@ -147,10 +160,20 @@ export function ContactIntelligencePage() {
     const requestedEnrichmentTaskId = enrichmentTaskIdRef.current;
 
     try {
+      const detailResult = await Promise.allSettled([fetchTaskDetail(taskId)]);
+      const detailPayload = detailResult[0];
+      const latestEnrichmentTaskId = detailPayload.status === 'fulfilled'
+        ? detailPayload.value.latest_contact_task?.id ?? requestedEnrichmentTaskId
+        : requestedEnrichmentTaskId;
+
+      if (detailPayload.status === 'fulfilled') {
+        enrichmentTaskIdRef.current = latestEnrichmentTaskId ?? null;
+      }
+
       const [searchStatusResult, leadResultResult, enrichmentStatusResult] = await Promise.allSettled([
-        fetchTaskStatus(taskId),
+        detailPayload.status === 'fulfilled' ? Promise.resolve(detailPayload.value) : fetchTaskStatus(requestedTaskId),
         fetchAllLeads(taskId),
-        requestedEnrichmentTaskId ? fetchTaskStatus(requestedEnrichmentTaskId) : Promise.resolve(null),
+        latestEnrichmentTaskId ? fetchTaskStatus(latestEnrichmentTaskId) : Promise.resolve(null),
       ]);
 
       if (activeTaskIdRef.current !== requestedTaskId) return;
@@ -439,7 +462,7 @@ export function ContactIntelligencePage() {
                 <thead>
                   <tr>
                     <th>公司</th>
-                    <th>国家</th>
+                    <th>识别国家</th>
                     <th>关键人状态</th>
                     <th>联系方式状态</th>
                     <th>联系人</th>
