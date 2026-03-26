@@ -5,6 +5,8 @@ export type LeadRow = {
   facebook_url?: string;
   linkedin_url?: string;
   country?: string;
+  continent?: string;
+  source?: string;
   contact_status: 'pending' | 'running' | 'done' | 'failed' | 'no_data' | 'timeout' | string;
   decision_maker_status?: 'pending' | 'running' | 'done' | 'failed' | 'no_data' | 'timeout' | string;
   general_contact_status?: 'pending' | 'running' | 'done' | 'failed' | 'no_data' | 'timeout' | string;
@@ -44,9 +46,23 @@ function renderDomain(url?: string) {
   }
 }
 
+function renderLinkLabel(url?: string) {
+  if (!url) return '-';
+  try {
+    const parsed = new URL(url);
+    const host = parsed.hostname.replace(/^www\./, '');
+    const path = parsed.pathname.replace(/\/+$/, '');
+    if (!path || path === '/') return host;
+    return `${host}${path.length > 28 ? `${path.slice(0, 28)}...` : path}`;
+  } catch {
+    return url;
+  }
+}
+
 export function LeadTable({ rows, selectedIds, step2Unlocked, page, pageSize, total, onToggleRow, onToggleAll, onEnrichDecisionMakers, onEnrichGeneralContacts, onEnrichAllContacts, onPageChange, onPageSizeChange }: Props) {
   const allSelected = rows.length > 0 && rows.every((row) => selectedIds.includes(row.id));
   const totalPages = Math.max(1, Math.ceil(total / pageSize));
+  const hasRows = rows.length > 0;
 
   const renderStatusTag = (status?: string) => {
     if (status === 'running') return <span className="status-inline"><span className="spinner-inline" /> 进行中</span>;
@@ -80,7 +96,7 @@ export function LeadTable({ rows, selectedIds, step2Unlocked, page, pageSize, to
               <th className="col-website">官网</th>
               <th>Facebook</th>
               <th>LinkedIn</th>
-              <th>国家</th>
+              <th>国家 / 区域</th>
               <th className="sticky-col sticky-action">联系人操作</th>
               <th>关键人状态</th>
               <th>潜在联系方式状态</th>
@@ -95,28 +111,80 @@ export function LeadTable({ rows, selectedIds, step2Unlocked, page, pageSize, to
             </tr>
           </thead>
           <tbody>
-            {rows.map((row, index) => (
+            {hasRows ? rows.map((row, index) => (
               <tr key={row.id}>
                 <td className="sticky-col sticky-check"><input type="checkbox" checked={selectedIds.includes(row.id)} onChange={() => onToggleRow(row.id)} /></td>
                 <td className="sticky-col sticky-index">{(page - 1) * pageSize + index + 1}</td>
-                <td className="sticky-col sticky-company col-company">{row.company_name ?? '-'}</td>
-                <td className="col-website">{row.website ? <a href={row.website} target="_blank" rel="noreferrer" title={row.website}>{renderDomain(row.website)}</a> : '-'}</td>
-                <td>{row.facebook_url ? <a href={row.facebook_url} target="_blank" rel="noreferrer" title={row.facebook_url}>{row.facebook_url}</a> : '-'}</td>
-                <td>{row.linkedin_url ? <a href={row.linkedin_url} target="_blank" rel="noreferrer" title={row.linkedin_url}>{row.linkedin_url}</a> : '-'}</td>
-                <td>{row.country ?? '-'}</td>
+                <td className="sticky-col sticky-company col-company">
+                  <div className="company-cell">
+                    <strong>{row.company_name ?? '-'}</strong>
+                    <small>{renderDomain(row.website)}</small>
+                  </div>
+                </td>
+                <td className="col-website">
+                  {row.website ? (
+                    <a className="link-pill" href={row.website} target="_blank" rel="noreferrer" title={row.website}>
+                      {renderDomain(row.website)}
+                    </a>
+                  ) : '-'}
+                </td>
+                <td>
+                  {row.facebook_url ? (
+                    <a className="link-pill link-pill-facebook" href={row.facebook_url} target="_blank" rel="noreferrer" title={row.facebook_url}>
+                      {renderLinkLabel(row.facebook_url)}
+                    </a>
+                  ) : '-'}
+                </td>
+                <td>
+                  {row.linkedin_url ? (
+                    <a className="link-pill link-pill-linkedin" href={row.linkedin_url} target="_blank" rel="noreferrer" title={row.linkedin_url}>
+                      {renderLinkLabel(row.linkedin_url)}
+                    </a>
+                  ) : '-'}
+                </td>
+                <td>
+                  <div className="location-cell">
+                    <strong>{row.country ?? '-'}</strong>
+                    <small>{row.continent || '未标注区域'}</small>
+                  </div>
+                </td>
                 <td className="sticky-col sticky-action">{renderContactAction(row)}</td>
                 <td>{renderStatusTag(row.decision_maker_status)}</td>
                 <td>{renderStatusTag(row.general_contact_status)}</td>
                 <td className="col-contact-name">{row.contact_name || '-'}</td>
                 <td className="col-title">{row.contact_title || '-'}</td>
-                <td>{row.linkedin_personal_url ? <a href={row.linkedin_personal_url} target="_blank" rel="noreferrer" title={row.linkedin_personal_url}>{row.linkedin_personal_url}</a> : '-'}</td>
+                <td>
+                  {row.linkedin_personal_url ? (
+                    <a className="link-pill link-pill-linkedin" href={row.linkedin_personal_url} target="_blank" rel="noreferrer" title={row.linkedin_personal_url}>
+                      {renderLinkLabel(row.linkedin_personal_url)}
+                    </a>
+                  ) : '-'}
+                </td>
                 <td className="col-email">{row.personal_email || '-'}</td>
                 <td className="col-email">{row.work_email || '-'}</td>
                 <td>{row.phone || '-'}</td>
                 <td>{row.whatsapp || '-'}</td>
-                <td title={(row.potential_contacts?.items || []).join('\n')}>{row.potential_contacts?.items?.length ? row.potential_contacts.items.join(' / ') : (row.general_emails?.join(' / ') || '-')}</td>
+                <td title={(row.potential_contacts?.items || []).join('\n')}>
+                  {row.potential_contacts?.items?.length ? (
+                    <div className="contact-chip-list">
+                      {row.potential_contacts.items.slice(0, 4).map((item) => <span key={item} className="contact-chip">{item}</span>)}
+                      {row.potential_contacts.items.length > 4 ? <span className="contact-chip">+{row.potential_contacts.items.length - 4}</span> : null}
+                    </div>
+                  ) : row.general_emails?.length ? (
+                    <div className="contact-chip-list">
+                      {row.general_emails.slice(0, 4).map((item) => <span key={item} className="contact-chip">{item}</span>)}
+                      {row.general_emails.length > 4 ? <span className="contact-chip">+{row.general_emails.length - 4}</span> : null}
+                    </div>
+                  ) : '-'}
+                </td>
               </tr>
-            ))}
+            )) : (
+              <tr>
+                <td colSpan={18} style={{ padding: '28px 16px', textAlign: 'center' }}>
+                  <div className="muted-text">暂无结果。先完成搜索，或者切换到演示模式生成一批可操作的示例企业。</div>
+                </td>
+              </tr>
+            )}
           </tbody>
         </table>
       </div>

@@ -1,10 +1,13 @@
 import React from 'react';
 import ReactDOM from 'react-dom/client';
 import { QueryClient, QueryClientProvider } from '@tanstack/react-query';
-import { BrowserRouter, Navigate, Route, Routes } from 'react-router-dom';
+import { BrowserRouter, Route, Routes } from 'react-router-dom';
 
 import { AppLayout } from './components/Layout/AppLayout';
 import { LeadDiscoveryPage } from './pages/LeadDiscovery';
+import { ContactIntelligencePage } from './pages/ContactIntelligence';
+import { OutreachPage } from './pages/Outreach';
+import { TestingPage } from './pages/Testing';
 import './styles/global.css';
 
 const queryClient = new QueryClient();
@@ -16,8 +19,9 @@ ReactDOM.createRoot(document.getElementById('root')!).render(
         <Routes>
           <Route path="/" element={<AppLayout />}>
             <Route index element={<LeadDiscoveryPage />} />
-            <Route path="contacts" element={<Navigate to="/" replace />} />
-            <Route path="outreach" element={<Navigate to="/" replace />} />
+            <Route path="contacts" element={<ContactIntelligencePage />} />
+            <Route path="outreach" element={<OutreachPage />} />
+            <Route path="testing" element={<TestingPage />} />
           </Route>
         </Routes>
       </BrowserRouter>

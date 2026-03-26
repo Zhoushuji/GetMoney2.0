@@ -27,6 +27,16 @@ TASKS: dict[str, dict] = {}
 LEADS: dict[str, list[LeadRead]] = {}
 CONTACTS: dict[str, list[ContactRead]] = {}
 IGNORED_HOSTS = {"example.com", "example.org", "example.net", "linkedin.com", "www.linkedin.com", "facebook.com", "www.facebook.com"}
+DEMO_SUFFIXES = [
+    "Trading",
+    "Manufacturing",
+    "Supply",
+    "Industries",
+    "Global",
+    "Solutions",
+    "Exports",
+    "Partners",
+]
 QUERY_TEMPLATES = [
     "{product} supplier in {country}",
     "{product} manufacturer in {country}",
@@ -93,6 +103,89 @@ def _max_pages(target_count: int | None) -> int:
     if target_count is None:
         return 3
     return max(1, min(10, math.ceil(target_count / 50)))
+
+
+def _slugify(value: str) -> str:
+    slug = "".join(character.lower() if character.isalnum() else " " for character in value)
+    return "-".join(part for part in slug.split() if part) or "product"
+
+
+def _demo_result_count(payload: LeadSearchRequest) -> int:
+    if payload.target_count is not None:
+        return payload.target_count
+    country_count = len(payload.countries) if payload.countries else 1
+    language_count = len(payload.languages) if payload.languages else 1
+    return max(6, min(12, country_count * language_count * 2))
+
+
+def _estimate_total_leads(payload: LeadSearchRequest) -> int:
+    if payload.mode == "demo":
+        return _demo_result_count(payload)
+    if payload.target_count is not None:
+        return max(payload.target_count, payload.target_count * 2)
+    query_count = max(1, len(_build_queries(payload)))
+    estimated = query_count * _max_pages(payload.target_count) * 10
+    return max(estimated, 10)
+
+
+def _initial_candidate_budget(target_count: int | None) -> int | None:
+    if target_count is None:
+        return None
+    return max(target_count, target_count * 2)
+
+
+def _candidate_budget_step(target_count: int | None) -> int:
+    if target_count is None:
+        return 0
+    return max(1, target_count)
+
+
+def _build_demo_lead_item(payload: LeadSearchRequest, index: int) -> dict:
+    countries = payload.countries or ["Global Market"]
+    continents = payload.continents or ["Global"]
+    languages = payload.languages or ["en"]
+    country = countries[index % len(countries)]
+    continent = continents[index % len(continents)]
+    language = languages[index % len(languages)]
+    suffix = DEMO_SUFFIXES[index % len(DEMO_SUFFIXES)]
+    slug = _slugify(payload.product_name)
+    country_slug = _slugify(country)
+    company_name = f"{payload.product_name.strip()} {suffix} {index + 1}".strip()
+    website = f"https://example.com/demo/{slug}/{country_slug}/{index + 1}"
+    return {
+        "company_name": company_name,
+        "website": website,
+        "facebook_url": f"https://www.facebook.com/{slug}-{index + 1}",
+        "linkedin_url": f"https://www.linkedin.com/company/{slug}-{country_slug}-{index + 1}",
+        "country": country,
+        "continent": continent,
+        "source": "demo",
+        "contact_status": "pending",
+        "decision_maker_status": "pending",
+        "general_contact_status": "pending",
+        "contact_name": None,
+        "contact_title": None,
+        "linkedin_personal_url": None,
+        "personal_email": None,
+        "work_email": None,
+        "phone": None,
+        "whatsapp": None,
+        "potential_contacts": None,
+        "general_emails": [],
+        "raw_data": {
+            "search_title": company_name,
+            "search_snippet": f"Demo lead generated for {payload.product_name} in {country}.",
+            "name_source": "demo_mode",
+            "demo_mode": True,
+            "demo_index": index + 1,
+            "demo_language": language,
+        },
+    }
+
+
+def _build_demo_leads(payload: LeadSearchRequest) -> list[dict]:
+    result_count = _demo_result_count(payload)
+    return [_build_demo_lead_item(payload, index) for index in range(result_count)]
 
 
 async def _search_serper_paginated(runtime: SearchRuntime, query: str, gl: str, hl: str, max_pages: int) -> list[dict]:
@@ -166,9 +259,17 @@ async def _fetch_search_results(payload: LeadSearchRequest) -> list[dict]:
     collected: list[dict] = []
     seen_hosts: set[str] = set()
     max_results = payload.target_count or len(queries) * 30
+    candidate_budget = _initial_candidate_budget(payload.target_count)
+    budget_step = _candidate_budget_step(payload.target_count)
+    inspected_candidates = 0
 
     for query_info, search_results in zip(queries, paged_results, strict=False):
         for item in search_results:
+            inspected_candidates += 1
+            if candidate_budget is not None and inspected_candidates > candidate_budget:
+                if len(collected) >= payload.target_count:
+                    return collected[:payload.target_count]
+                candidate_budget += budget_step
             lead_item = await _build_lead_item(runtime, payload, item, query_info["country"])
             if not lead_item:
                 continue
@@ -191,8 +292,14 @@ async def _run_lead_search_task(task_id: UUID, payload: LeadSearchRequest) -> No
     try:
         task["status"] = "running"
         task["updated_at"] = datetime.now(timezone.utc)
-        results = await _fetch_search_results(payload)
-        confirmed_leads = len(results) if payload.target_count is None else min(len(results), payload.target_count)
+        if payload.mode == "demo":
+            results = _build_demo_leads(payload)
+            confirmed_leads = len(results)
+            stopped_early = False
+        else:
+            results = await _fetch_search_results(payload)
+            confirmed_leads = len(results) if payload.target_count is None else min(len(results), payload.target_count)
+            stopped_early = payload.target_count is not None and confirmed_leads >= payload.target_count
         total = max(len(results), confirmed_leads)
         now = datetime.now(timezone.utc)
         LEADS[str(task_id)] = [LeadRead(id=uuid4(), task_id=task_id, created_at=now, **item) for item in results[:confirmed_leads]]
@@ -202,7 +309,7 @@ async def _run_lead_search_task(task_id: UUID, payload: LeadSearchRequest) -> No
             "total": total,
             "completed": total,
             "confirmed_leads": confirmed_leads,
-            "stopped_early": payload.target_count is not None and confirmed_leads >= payload.target_count,
+            "stopped_early": stopped_early,
             "updated_at": now,
         })
     except Exception as exc:
@@ -216,8 +323,8 @@ async def _run_lead_search_task(task_id: UUID, payload: LeadSearchRequest) -> No
 def build_task_status(task: dict) -> TaskStatusResponse:
     now = datetime.now(timezone.utc)
     leads = LEADS.get(str(task["id"]), [])
-    confirmed_done = sum(1 for lead in leads if lead.contact_status == "done")
-    stopped_early = task["target_count"] is not None and confirmed_done >= task["target_count"]
+    confirmed_done = int(task.get("confirmed_leads") or len(leads))
+    stopped_early = bool(task.get("stopped_early"))
     status = "stopped_early" if stopped_early else task["status"]
     progress = 100 if status in {"completed", "stopped_early"} else task["progress"]
     task.update({"status": status, "progress": progress, "stopped_early": stopped_early, "updated_at": now, "confirmed_leads": confirmed_done})
@@ -263,11 +370,12 @@ async def create_lead_search(payload: LeadSearchRequest) -> TaskCreateResponse:
         "id": task_id,
         "status": "running",
         "progress": 0,
-        "total": payload.target_count or 0,
+        "total": _estimate_total_leads(payload),
         "completed": 0,
         "confirmed_leads": 0,
         "target_count": payload.target_count,
         "stopped_early": False,
+        "mode": payload.mode,
         "created_at": now,
         "updated_at": now,
     }

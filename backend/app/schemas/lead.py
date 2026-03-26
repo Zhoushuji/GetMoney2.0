@@ -1,15 +1,18 @@
 from datetime import datetime
 from uuid import UUID
 
+from typing import Literal
+
 from pydantic import BaseModel, Field
 
 
 class LeadSearchRequest(BaseModel):
     product_name: str = Field(min_length=1)
-    continents: list[str] = []
-    countries: list[str] = []
-    languages: list[str] = []
+    continents: list[str] = Field(default_factory=list)
+    countries: list[str] = Field(default_factory=list)
+    languages: list[str] = Field(default_factory=list)
     target_count: int | None = Field(default=None, ge=1)
+    mode: Literal["live", "demo"] = "live"
 
 
 class LeadRead(BaseModel):

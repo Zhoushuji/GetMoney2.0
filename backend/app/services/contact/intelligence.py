@@ -1,6 +1,7 @@
+import asyncio
 import re
 from dataclasses import dataclass
-from urllib.parse import urljoin
+from urllib.parse import urljoin, urlparse
 
 import httpx
 from bs4 import BeautifulSoup
@@ -9,6 +10,7 @@ from uuid import uuid4
 
 from app.schemas.contact import ContactRead
 from app.services.contact.classifier import TitleClassifier
+from app.services.search.linkedin import LinkedInPeopleFinder
 from app.services.search.serper import SerperClient
 
 PHONE_NEAR_WA_WINDOW = 50
@@ -40,6 +42,7 @@ class ContactIntelligenceService:
     def __init__(self) -> None:
         self.classifier = TitleClassifier()
         self.serper = SerperClient()
+        self.linkedin_people_finder = LinkedInPeopleFinder(classifier=self.classifier)
 
     def _soup_from_html(self, html: str):
         return BeautifulSoup(html, "html.parser")
@@ -48,17 +51,26 @@ class ContactIntelligenceService:
         return await self.find_decision_makers(lead)
 
     async def find_decision_makers(self, lead) -> list[ContactRead]:
+        company_name = lead.company_name or ""
         pages = await self._fetch_site_pages(lead.website)
         combined_html = "\n".join(html for _, html in pages)
         soup = self._soup_from_html(combined_html) if combined_html else None
-        company_name = lead.company_name or ""
         source_urls = [url for url, _ in pages]
         potential_contacts = self._extract_potential_contacts(lead.website, soup)
+        linkedin_company_url = getattr(lead, "linkedin_url", None) or self._extract_linkedin_company_url(pages)
+        linkedin_people = self._merge_people(
+            self._extract_linkedin_people(soup, company_name),
+            await self.linkedin_people_finder.find_key_people(company_name, linkedin_company_url, lead.website)
+            if (company_name or linkedin_company_url or lead.website)
+            else [],
+        )
 
-        linkedin_people = self._extract_linkedin_people(soup, company_name)
         if not linkedin_people and company_name:
-            linkedin_people = await self._search_linkedin_people_via_google(company_name)
-        verified_people = self._verify_people(linkedin_people, company_name)
+            linkedin_people = self._merge_people(linkedin_people, await self._search_linkedin_people_via_google(company_name))
+        trusted_people = [person for person in linkedin_people if self._is_trusted_source(person)]
+        verified_people = self._verify_people(trusted_people or linkedin_people, company_name, lead.website)
+        if trusted_people and not verified_people:
+            verified_people = self._verify_people(linkedin_people, company_name, lead.website)
         contact = self._build_contact(lead, verified_people, potential_contacts, source_urls=source_urls)
         return [contact] if contact else []
 
@@ -85,6 +97,10 @@ class ContactIntelligenceService:
                     "person_name": person_name,
                     "title": role_title,
                     "linkedin_personal_url": link,
+                    "source": "legacy_google",
+                    "source_url": link,
+                    "source_context": f"{title} {snippet}".strip(),
+                    "source_rank": 3,
                 })
         return people
 
@@ -153,6 +169,31 @@ class ContactIntelligenceService:
         except Exception:
             return None
 
+    def _extract_linkedin_company_url(self, pages: list[tuple[str, str]]) -> str | None:
+        seen: set[str] = set()
+        for page_url, html in pages:
+            soup = self._soup_from_html(html)
+            for node in soup.select("a[href], link[href], meta[content]"):
+                raw = node.get("href") or node.get("content") or ""
+                if "linkedin.com/company/" not in raw.lower() and "/company/" not in raw.lower():
+                    continue
+                candidate = raw.strip()
+                if candidate.startswith("//"):
+                    candidate = f"https:{candidate}"
+                elif candidate.startswith("/"):
+                    candidate = urljoin(page_url, candidate)
+                elif not re.match(r"^https?://", candidate, re.I):
+                    candidate = urljoin(page_url, candidate)
+                match = re.search(r'https?://(?:[a-z]{2,3}\.)?linkedin\.com/company/([a-zA-Z0-9_-]+)', candidate, re.I)
+                if not match:
+                    continue
+                normalized = f"https://www.linkedin.com/company/{match.group(1)}"
+                if normalized in seen:
+                    continue
+                seen.add(normalized)
+                return normalized
+        return None
+
     def _extract_linkedin_people(self, soup: BeautifulSoup | None, company_name: str) -> list[dict]:
         if soup is None:
             return []
@@ -166,16 +207,45 @@ class ContactIntelligenceService:
             seen.add(href)
             container_text = anchor.parent.get_text(" ", strip=True) if anchor.parent else text
             title = container_text.replace(text, "").strip(" -|:") or None
-            candidates.append({"person_name": text or None, "title": title, "linkedin_personal_url": href})
+            candidates.append({
+                "person_name": text or None,
+                "title": title,
+                "linkedin_personal_url": href,
+                "source": "website",
+                "source_url": href,
+                "source_rank": 0,
+            })
         return candidates
 
-    def _verify_people(self, people: list[dict], company_name: str) -> list[dict]:
+    def _merge_people(self, *groups: list[dict]) -> list[dict]:
+        merged: list[dict] = []
+        seen_urls: set[str] = set()
+        seen_names: set[tuple[str, str]] = set()
+        for group in groups:
+            for person in group:
+                url = (person.get("linkedin_personal_url") or "").strip()
+                name_key = (
+                    (person.get("person_name") or "").strip().lower(),
+                    (person.get("title") or "").strip().lower(),
+                )
+                if url:
+                    if url in seen_urls:
+                        continue
+                    seen_urls.add(url)
+                elif name_key in seen_names:
+                    continue
+                seen_names.add(name_key)
+                merged.append(person)
+        return merged
+
+    def _verify_people(self, people: list[dict], company_name: str, website: str | None = None) -> list[dict]:
         verified: list[dict] = []
-        normalized_company = company_name.lower()
+        company_tokens = self._company_tokens(company_name, website)
         for person in people:
             name = person.get("person_name") or ""
             title = person.get("title") or ""
             linkedin = person.get("linkedin_personal_url") or ""
+            source = person.get("source") or ""
             if any(pattern.search(name) for pattern in INVALID_PERSON_NAME_PATTERNS):
                 continue
             if any(pattern.search(linkedin) for pattern in INVALID_LINKEDIN_PATTERNS):
@@ -184,14 +254,44 @@ class ContactIntelligenceService:
             if not is_allowed:
                 continue
             person["priority"] = priority
-            # lightweight cross-validation inference: require at least one company token in nearby text/name/title payload
-            tokens = [token for token in normalized_company.split() if len(token) > 2]
-            if tokens and not any(token in f"{name} {title} {linkedin}".lower() for token in tokens):
-                # inference fallback: still allow when linkedin path looks person-like and title is strong match
-                if priority > 2:
+            if source not in {"website", "path_b"}:
+                context = f"{name} {title} {linkedin} {person.get('source_context') or ''}".lower()
+                token_hits = sum(1 for token in company_tokens if token in context)
+                required_hits = 1 if len(company_tokens) == 1 else 2
+                if company_tokens and token_hits < min(required_hits, len(company_tokens)):
                     continue
             verified.append(person)
-        return sorted(verified, key=lambda item: item.get("priority") or 999)
+        return sorted(verified, key=lambda item: (item.get("source_rank") or 9, item.get("priority") or 999))
+
+    def _company_tokens(self, company_name: str, website: str | None = None) -> list[str]:
+        tokens: list[str] = []
+        for raw in [company_name or "", self._website_brand(website)]:
+            for token in re.split(r"[^a-z0-9]+", raw.lower()):
+                if len(token) < 3:
+                    continue
+                if token in {"about", "unternehmen", "contact", "home", "company", "group", "the", "inc", "llc", "ltd", "gmbh"}:
+                    continue
+                tokens.append(token)
+        deduped: list[str] = []
+        seen: set[str] = set()
+        for token in tokens:
+            if token in seen:
+                continue
+            seen.add(token)
+            deduped.append(token)
+        return deduped
+
+    def _website_brand(self, website: str | None) -> str:
+        if not website:
+            return ""
+        parsed = urlparse(website if "://" in website else f"https://{website}")
+        host = (parsed.netloc or parsed.path or "").lower().removeprefix("www.")
+        if not host:
+            return ""
+        return host.split(".", 1)[0].replace("-", " ")
+
+    def _is_trusted_source(self, person: dict) -> bool:
+        return (person.get("source") or "") in {"website", "path_b"}
 
     def _build_contact(self, lead, verified_people: list[dict], potential_contacts: dict[str, list[str]], source_urls: list[str] | None = None) -> ContactRead | None:
         chosen = verified_people[0] if verified_people else None
@@ -214,6 +314,10 @@ class ContactIntelligenceService:
         if not personal_email:
             work_email = next(iter(potential_contacts.get("emails", [])), None)
         phone = next(iter(potential_contacts.get("phones", [])), None)
+        resolved_source_urls = list(source_urls or ([lead.website] if lead.website else []))
+        for candidate_url in [chosen.get("source_url"), chosen.get("linkedin_personal_url")]:
+            if candidate_url and candidate_url not in resolved_source_urls:
+                resolved_source_urls.append(candidate_url)
 
         return ContactRead(
             id=uuid4(),
@@ -227,7 +331,7 @@ class ContactIntelligenceService:
             phone=phone,
             whatsapp=whatsapp,
             potential_contacts=None,
-            source_urls=source_urls or ([lead.website] if lead.website else []),
+            source_urls=resolved_source_urls,
             verified_at=None,
         )
 

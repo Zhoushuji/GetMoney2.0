@@ -139,6 +139,12 @@ async def _run_enrichment_batch(task_id: str, lead_ids: list[str], mode: str = "
     task = TASKS.get(task_id)
     if not task:
         return
+    if not lead_ids:
+        task["status"] = "completed"
+        task["progress"] = 100
+        task["completed"] = 0
+        task["updated_at"] = datetime.now(timezone.utc)
+        return
     task["status"] = "running"
     for idx, lead_id in enumerate(lead_ids, start=1):
         await _enrich_one_lead(lead_id, mode=mode)
@@ -154,18 +160,6 @@ async def _run_enrichment_batch(task_id: str, lead_ids: list[str], mode: str = "
 async def enrich_contacts(payload: ContactEnrichRequest) -> TaskCreateResponse:
     task_id = uuid4()
     now = datetime.now(timezone.utc)
-    TASKS[str(task_id)] = {
-        "id": task_id,
-        "status": "pending",
-        "progress": 0,
-        "total": len(payload.lead_ids),
-        "completed": 0,
-        "confirmed_leads": 0,
-        "target_count": len(payload.lead_ids),
-        "stopped_early": False,
-        "created_at": now,
-        "updated_at": now,
-    }
 
     lead_lookup = {str(lead.id): lead for leads in LEADS.values() for lead in leads}
     lead_ids: list[str] = []
@@ -179,6 +173,25 @@ async def enrich_contacts(payload: ContactEnrichRequest) -> TaskCreateResponse:
             "running" if payload.mode in {"all", "general_contact"} else getattr(lead, "general_contact_status", "pending"),
         )
         lead_ids.append(str(lead_id))
+
+    TASKS[str(task_id)] = {
+        "id": task_id,
+        "status": "pending",
+        "progress": 0,
+        "total": len(lead_ids),
+        "completed": 0,
+        "confirmed_leads": 0,
+        "target_count": len(lead_ids),
+        "stopped_early": False,
+        "created_at": now,
+        "updated_at": now,
+    }
+
+    if not lead_ids:
+        TASKS[str(task_id)]["status"] = "completed"
+        TASKS[str(task_id)]["progress"] = 100
+        TASKS[str(task_id)]["updated_at"] = datetime.now(timezone.utc)
+        return TaskCreateResponse(task_id=task_id)
 
     try:
         asyncio.create_task(_run_enrichment_batch(str(task_id), lead_ids, mode=payload.mode))
@@ -242,7 +255,7 @@ async def get_contact_status(lead_id: UUID) -> ContactStatusResponse:
         potential_contacts={
             "phone": getattr(lead, "phone", None),
             "whatsapp": getattr(lead, "whatsapp", None),
-            "general_emails": getattr(lead, "general_emails", None),
+            "general_emails": getattr(lead, "general_emails", []) or [],
             "items": (getattr(lead, "potential_contacts", None) or {}).get("items", []),
         },
         error=error,

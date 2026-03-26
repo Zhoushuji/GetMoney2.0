@@ -1,4 +1,5 @@
 import { useEffect, useMemo, useRef, useState } from 'react';
+import { AxiosError } from 'axios';
 
 import { apiClient } from '../../api/client';
 import { LeadSearchForm, LeadSearchPayload } from '../../components/SearchForm/LeadSearchForm';
@@ -68,6 +69,7 @@ export function LeadDiscoveryPage() {
   const { taskId, setTaskId } = useTaskStore();
   const [isSubmitting, setIsSubmitting] = useState(false);
   const [taskStatus, setTaskStatus] = useState<TaskStatus | null>(null);
+  const [taskError, setTaskError] = useState<string | null>(null);
   const [rows, setRows] = useState<LeadRow[]>([]);
   const [totalRows, setTotalRows] = useState(0);
   const [selectedIds, setSelectedIds] = useState<string[]>([]);
@@ -75,6 +77,7 @@ export function LeadDiscoveryPage() {
   const [pageSize, setPageSize] = useState(50);
   const eventSourceRef = useRef<EventSource | null>(null);
   const pollerRef = useRef<number | null>(null);
+  const activeTaskIdRef = useRef<string | null>(taskId ?? null);
 
   const stopPolling = () => {
     if (pollerRef.current !== null) {
@@ -88,32 +91,58 @@ export function LeadDiscoveryPage() {
     eventSourceRef.current = null;
   };
 
+  const formatError = (error: unknown, fallback: string) => {
+    if (error instanceof AxiosError) {
+      const detail = error.response?.data?.detail;
+      if (typeof detail === 'string' && detail.trim()) return detail;
+      if (Array.isArray(detail) && detail.length > 0) {
+        return detail.map((item) => (typeof item === 'string' ? item : item?.msg)).filter(Boolean).join('；') || fallback;
+      }
+      return error.message || fallback;
+    }
+    if (error instanceof Error) return error.message || fallback;
+    return fallback;
+  };
+
   const loadResults = async (nextTaskId: string, nextPage = page, nextPageSize = pageSize) => {
-    const response = await apiClient.get<LeadListResponse>(`/leads?task_id=${nextTaskId}&page=${nextPage}&page_size=${nextPageSize}`);
+    const response = await apiClient.get<LeadListResponse>('/leads', {
+      params: { task_id: nextTaskId, page: nextPage, page_size: nextPageSize },
+    });
+    if (activeTaskIdRef.current !== nextTaskId) return;
     setRows(response.data.items);
     setTotalRows(response.data.total);
     setPage(response.data.page);
     setPageSize(response.data.page_size);
   };
 
-  const handleTaskUpdate = async (status: TaskStatus) => {
+  const handleTaskUpdate = async (status: TaskStatus, expectedTaskId = activeTaskIdRef.current) => {
+    if (!expectedTaskId || activeTaskIdRef.current !== expectedTaskId) return;
     setTaskStatus(status);
+    setTaskError(null);
     if (status.status === 'failed') {
       stopPolling();
       closeStream();
       setIsSubmitting(false);
-      window.alert('搜索任务失败，请稍后重试。');
+      setTaskError('搜索任务失败，请稍后重试，或切换到演示模式验证流程。');
       return;
     }
     if (status.status === 'completed' || status.status === 'stopped_early') {
       stopPolling();
       closeStream();
       setIsSubmitting(false);
-      await loadResults(status.id, 1, pageSize);
     }
   };
 
   useEffect(() => {
+    activeTaskIdRef.current = taskId ?? null;
+    closeStream();
+    stopPolling();
+    setTaskError(null);
+    setTaskStatus(null);
+    setRows([]);
+    setTotalRows(0);
+    setSelectedIds([]);
+    setPage(1);
     if (!taskId) return undefined;
     let fallbackStarted = false;
     const startPolling = () => {
@@ -121,14 +150,28 @@ export function LeadDiscoveryPage() {
       fallbackStarted = true;
       stopPolling();
       pollerRef.current = window.setInterval(async () => {
-        const response = await apiClient.get<TaskStatus>(`/tasks/${taskId}/status`);
-        await handleTaskUpdate(response.data);
+        try {
+          const response = await apiClient.get<TaskStatus>(`/tasks/${taskId}/status`);
+          await handleTaskUpdate(response.data, taskId);
+        } catch (error) {
+          if (activeTaskIdRef.current === taskId) {
+            setTaskError(formatError(error, '任务状态读取失败，请手动刷新页面重试。'));
+          }
+        }
       }, 3000);
     };
     try {
       const source = new EventSource(`/api/v1/tasks/${taskId}/stream`);
       eventSourceRef.current = source;
-      source.onmessage = async (event) => await handleTaskUpdate(JSON.parse(event.data));
+      source.onmessage = async (event) => {
+        try {
+          await handleTaskUpdate(JSON.parse(event.data), taskId);
+        } catch (error) {
+          if (activeTaskIdRef.current === taskId) {
+            setTaskError(formatError(error, '任务状态解析失败，请刷新后重试。'));
+          }
+        }
+      };
       source.onerror = () => {
         closeStream();
         startPolling();
@@ -136,16 +179,26 @@ export function LeadDiscoveryPage() {
     } catch {
       startPolling();
     }
+    void (async () => {
+      try {
+        const response = await apiClient.get<TaskStatus>(`/tasks/${taskId}/status`);
+        await handleTaskUpdate(response.data, taskId);
+      } catch (error) {
+        if (activeTaskIdRef.current === taskId) {
+          setTaskError(formatError(error, '任务状态读取失败，请稍后重试。'));
+        }
+      }
+    })();
     return () => {
       closeStream();
       stopPolling();
     };
-  }, [taskId, pageSize]);
+  }, [taskId]);
 
   useEffect(() => {
-    if (!taskId) return;
+    if (!taskId || !taskStatus || !['completed', 'stopped_early'].includes(taskStatus.status)) return;
     void loadResults(taskId, page, pageSize);
-  }, [page, pageSize]);
+  }, [taskId, taskStatus, page, pageSize]);
 
   const mergeContact = (leadId: string, contact?: ContactResponse['contacts'][number]) => {
     setRows((current) => current.map((row) => row.id !== leadId ? row : {
@@ -167,35 +220,45 @@ export function LeadDiscoveryPage() {
       decision_maker_status: mode === 'general_contact' ? row.decision_maker_status : 'running',
       general_contact_status: mode === 'decision_maker' ? row.general_contact_status : 'running',
     } : row));
-    await apiClient.post('/contacts/enrich', { lead_ids: [leadId], mode });
+    try {
+      await apiClient.post('/contacts/enrich', { lead_ids: [leadId], mode });
 
-    const startedAt = Date.now();
-    while (Date.now() - startedAt < 150_000) {
-      await new Promise((resolve) => setTimeout(resolve, 3000));
-      const statusResponse = await apiClient.get<ContactStatusResponse>(`/contacts/status/${leadId}`);
-      const decisionStatus = statusResponse.data.decision_maker_status;
-      const generalStatus = statusResponse.data.general_contact_status;
+      const startedAt = Date.now();
+      while (Date.now() - startedAt < 150_000) {
+        await new Promise((resolve) => setTimeout(resolve, 3000));
+        const statusResponse = await apiClient.get<ContactStatusResponse>(`/contacts/status/${leadId}`);
+        const decisionStatus = statusResponse.data.decision_maker_status;
+        const generalStatus = statusResponse.data.general_contact_status;
+        setRows((current) => current.map((row) => row.id === leadId ? {
+          ...row,
+          decision_maker_status: decisionStatus,
+          general_contact_status: generalStatus,
+          contact_status: decisionStatus === 'done' || generalStatus === 'done' ? 'done' : row.contact_status,
+          contact_name: statusResponse.data.contacts?.[0]?.person_name,
+          contact_title: statusResponse.data.contacts?.[0]?.title,
+          linkedin_personal_url: statusResponse.data.contacts?.[0]?.linkedin_personal_url,
+          personal_email: statusResponse.data.contacts?.[0]?.personal_email,
+          work_email: statusResponse.data.contacts?.[0]?.work_email,
+          phone: statusResponse.data.potential_contacts?.phone,
+          whatsapp: statusResponse.data.potential_contacts?.whatsapp,
+          general_emails: statusResponse.data.potential_contacts?.general_emails,
+          potential_contacts: statusResponse.data.potential_contacts?.items ? { items: statusResponse.data.potential_contacts.items } : row.potential_contacts,
+        } : row));
+        const decisionDone = ['done', 'no_data', 'timeout', 'failed'].includes(decisionStatus);
+        const generalDone = ['done', 'no_data', 'timeout', 'failed'].includes(generalStatus);
+        const completed = mode === 'decision_maker' ? decisionDone : mode === 'general_contact' ? generalDone : (decisionDone && generalDone);
+        if (completed) return;
+      }
+      setRows((current) => current.map((row) => row.id === leadId ? { ...row, decision_maker_status: 'timeout', general_contact_status: 'timeout' } : row));
+      setTaskError('联系人挖掘超时，请稍后重试。');
+    } catch (error) {
       setRows((current) => current.map((row) => row.id === leadId ? {
         ...row,
-        decision_maker_status: decisionStatus,
-        general_contact_status: generalStatus,
-        contact_status: decisionStatus === 'done' || generalStatus === 'done' ? 'done' : row.contact_status,
-        contact_name: statusResponse.data.contacts?.[0]?.person_name,
-        contact_title: statusResponse.data.contacts?.[0]?.title,
-        linkedin_personal_url: statusResponse.data.contacts?.[0]?.linkedin_personal_url,
-        personal_email: statusResponse.data.contacts?.[0]?.personal_email,
-        work_email: statusResponse.data.contacts?.[0]?.work_email,
-        phone: statusResponse.data.potential_contacts?.phone,
-        whatsapp: statusResponse.data.potential_contacts?.whatsapp,
-        general_emails: statusResponse.data.potential_contacts?.general_emails,
-        potential_contacts: statusResponse.data.potential_contacts?.items ? { items: statusResponse.data.potential_contacts.items } : row.potential_contacts,
+        decision_maker_status: 'failed',
+        general_contact_status: 'failed',
       } : row));
-      const decisionDone = ['done', 'no_data', 'timeout', 'failed'].includes(decisionStatus);
-      const generalDone = ['done', 'no_data', 'timeout', 'failed'].includes(generalStatus);
-      const completed = mode === 'decision_maker' ? decisionDone : mode === 'general_contact' ? generalDone : (decisionDone && generalDone);
-      if (completed) return;
+      setTaskError(formatError(error, '联系人挖掘失败，请稍后重试。'));
     }
-    setRows((current) => current.map((row) => row.id === leadId ? { ...row, decision_maker_status: 'timeout', general_contact_status: 'timeout' } : row));
   };
 
   const runContactQueue = async (leadIds: string[], mode: 'decision_maker' | 'general_contact' | 'all') => {
@@ -228,6 +291,12 @@ export function LeadDiscoveryPage() {
 
   return (
     <div className="flow-page">
+      {taskError ? (
+        <section className="panel section-panel" style={{ borderColor: '#f59e0b', background: '#fffbeb' }}>
+          <strong>任务提示</strong>
+          <p className="muted-text" style={{ margin: '8px 0 0' }}>{taskError}</p>
+        </section>
+      ) : null}
       <section className="step-indicator panel">
         <StepCard step="1" title="潜在客户发现" status={step1Status as any} />
         <div className="step-line" />
@@ -243,16 +312,17 @@ export function LeadDiscoveryPage() {
           onSubmit={async (payload: LeadSearchPayload) => {
             try {
               setIsSubmitting(true);
+              setTaskError(null);
+              setTaskStatus(null);
+              const response = await apiClient.post<{ task_id: string }>('/leads/search', payload);
               setRows([]);
               setTotalRows(0);
               setSelectedIds([]);
-              setTaskStatus(null);
               setPage(1);
-              const response = await apiClient.post<{ task_id: string }>('/leads/search', payload);
               setTaskId(response.data.task_id);
-            } catch {
+            } catch (error) {
               setIsSubmitting(false);
-              window.alert('搜索任务创建失败，请稍后重试。');
+              setTaskError(formatError(error, '搜索任务创建失败，请稍后重试。'));
             }
           }}
         />

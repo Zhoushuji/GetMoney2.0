@@ -8,6 +8,7 @@ export type LeadSearchPayload = {
   countries: string[];
   languages: string[];
   target_count: number | null;
+  mode: 'live' | 'demo';
 };
 
 type Props = {
@@ -28,10 +29,12 @@ const CONTINENT_LABELS: Record<string, string> = {
 };
 
 export function LeadSearchForm({ isSubmitting, onSubmit }: Props) {
+  const defaultMode: 'live' | 'demo' = import.meta.env.DEV ? 'demo' : 'live';
   const [productName, setProductName] = useState('industrial valve');
   const [selectedContinents, setSelectedContinents] = useState<string[]>(['Asia']);
   const [selectedCountries, setSelectedCountries] = useState<string[]>(['CN', 'IN']);
   const [selectedLanguages, setSelectedLanguages] = useState<string[]>([ENGLISH_CODE, 'zh']);
+  const [searchMode, setSearchMode] = useState<'live' | 'demo'>(defaultMode);
   const [countrySearch, setCountrySearch] = useState('');
   const [targetCountInput, setTargetCountInput] = useState('');
   const [errors, setErrors] = useState<FormErrors>({});
@@ -49,6 +52,9 @@ export function LeadSearchForm({ isSubmitting, onSubmit }: Props) {
   }).filter((group) => group.items.length > 0), [countrySearch, selectedContinents]);
 
   const visibleCountries = useMemo(() => groupedCountries.flatMap((group) => group.items), [groupedCountries]);
+  const selectedCountryEntries = useMemo(() => geoData
+    .filter((entry) => selectedCountries.includes(entry.code))
+    .sort((a, b) => a.name_en.localeCompare(b.name_en)), [selectedCountries]);
 
   const availableLanguages = useMemo(() => {
     const fromCountries = geoData.filter((entry) => selectedCountries.includes(entry.code)).flatMap((entry) => entry.languages);
@@ -112,6 +118,7 @@ export function LeadSearchForm({ isSubmitting, onSubmit }: Props) {
       countries: selectedCountries.map((code) => geoData.find((entry) => entry.code === code)?.name_en ?? code),
       languages: selectedLanguages,
       target_count: targetCount,
+      mode: searchMode,
     };
   };
 
@@ -149,7 +156,10 @@ export function LeadSearchForm({ isSubmitting, onSubmit }: Props) {
 
         <div className="field">
           <div className="field-inline">
-            <span>国家/地区（按已选大洲过滤）</span>
+            <div className="group-title-wrap">
+              <span>国家 / 地区（按已选大洲过滤）</span>
+              <small className="selection-counter">已选 {selectedCountries.length} 个</small>
+            </div>
             {visibleCountries.length > 20 ? <input className="input country-search" value={countrySearch} onChange={(e) => setCountrySearch(e.target.value)} placeholder="🔍 搜索国家（中/英）..." /> : null}
           </div>
           <div className={`country-panel ${errors.countries ? 'input-error' : ''}`}>
@@ -181,6 +191,22 @@ export function LeadSearchForm({ isSubmitting, onSubmit }: Props) {
               );
             })}
           </div>
+          {selectedCountryEntries.length > 0 ? (
+            <div className="selection-summary-card">
+              <div className="field-inline">
+                <strong>当前目标市场</strong>
+                <small className="selection-counter">{selectedCountryEntries.length} 个国家 / 地区</small>
+              </div>
+              <div className="selection-summary-list">
+                {selectedCountryEntries.map((entry) => (
+                  <span key={entry.code} className="selection-pill">
+                    {entry.name_zh || entry.name_en}
+                    <small>{CONTINENT_LABELS[entry.continent] ?? entry.continent}</small>
+                  </span>
+                ))}
+              </div>
+            </div>
+          ) : null}
           {errors.countries ? <small className="field-error">{errors.countries}</small> : null}
         </div>
 
@@ -210,8 +236,22 @@ export function LeadSearchForm({ isSubmitting, onSubmit }: Props) {
           <label className="field config-field">
             <span>目标客户数量（可选）</span>
             <input className={`input ${errors.target_count ? 'input-error' : ''}`} type="number" min={1} step={1} inputMode="numeric" value={targetCountInput} onChange={(e) => setTargetCountInput(e.target.value)} placeholder="留空 = 搜索全部" />
-            {errors.target_count ? <small className="field-error">{errors.target_count}</small> : <small className="field-help">留空表示尽可能搜索全部结果。</small>}
+            {errors.target_count ? <small className="field-error">{errors.target_count}</small> : <small className="field-help">默认先按目标数量的 2 倍抓取候选，不够时再按 1 倍逐步扩容。</small>}
           </label>
+          <div className="field config-field">
+            <span>搜索模式</span>
+            <div className="continent-row">
+              <label className="chip-checkbox">
+                <input type="radio" name="search-mode" checked={searchMode === 'live'} onChange={() => setSearchMode('live')} />
+                <span>实时搜索</span>
+              </label>
+              <label className="chip-checkbox">
+                <input type="radio" name="search-mode" checked={searchMode === 'demo'} onChange={() => setSearchMode('demo')} />
+                <span>演示模式</span>
+              </label>
+            </div>
+            <small className="field-help">演示模式会生成可交互的样例结果，适合本地联调；实时搜索会走外部检索服务。</small>
+          </div>
           <div className="actions config-actions"><button className="button" type="submit" disabled={isSubmitting}>{isSubmitting ? '搜索中…' : '开始搜索'}</button></div>
         </div>
       </section>
