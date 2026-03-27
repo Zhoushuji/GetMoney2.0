@@ -18,6 +18,7 @@ export type WorkspaceTaskSummary = {
   updated_at?: string | null;
   params?: {
     product_name?: string;
+    keywords?: string[];
     continents?: string[];
     countries?: string[];
     languages?: string[];
@@ -52,6 +53,7 @@ type WorkspaceContextValue = {
 const navigationItems = [
   { to: '/', label: '潜在客户发现', end: true },
   { to: '/history', label: '任务记录' },
+  { to: '/reviews', label: '审核记录' },
   { to: '/contacts', label: '核心联系人挖掘' },
   { to: '/outreach', label: '客户触达与拓展' },
   { to: '/testing', label: '功能测试' },

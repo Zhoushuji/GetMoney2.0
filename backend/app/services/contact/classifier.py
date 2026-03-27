@@ -4,8 +4,8 @@ import re
 class TitleClassifier:
     WHITE_LIST_PATTERNS = [
         (1, re.compile(r"\b(CEO|Chief Executive(?: Officer)?|Founder|Co[-\s]?Founder|Owner|Co-Owner|President|Chairman|Chairperson)\b", re.I)),
-        (2, re.compile(r"\b(Managing Director|MD|Director General|General Director|Executive Director|Geschaeftsfuehrer|Gesch.+f.+hrer|Director Ejecutivo|Directeur General|Consejero Delegado)\b", re.I)),
-        (3, re.compile(r"\b(General Manager|GM|COO|Chief Operating Officer|VP(?: of)? (?:Operations|Business|Commercial)|Vice President(?: of)? (?:Operations|Business|Commercial)|Head of (?:Operations|Business)|Betriebsleiter|Gerente General)\b", re.I)),
+        (2, re.compile(r"\b(Managing Director|MD|Director General|General Director|Executive Director|Director|Geschaeftsfuehrer|Gesch.+f.+hrer|Director Ejecutivo|Directeur General|Consejero Delegado)\b", re.I)),
+        (3, re.compile(r"\b(General Manager|GM|COO|Chief Operating Officer|VP|Vice President|VP(?: of)? (?:Operations|Business|Commercial|Procurement|Purchasing|Sourcing)|Vice President(?: of)? (?:Operations|Business|Commercial|Procurement|Purchasing|Sourcing)|Head|Head of (?:Operations|Business|Procurement|Purchasing|Sourcing|Technical)|Betriebsleiter|Gerente General)\b", re.I)),
         (4, re.compile(r"\b(Procurement|Purchasing|Sourcing|Supply Chain|CPO|Chief Procurement Officer|Head of (?:Procurement|Purchasing|Sourcing)|Director of (?:Procurement|Purchasing|Sourcing)|VP(?: of)? (?:Procurement|Purchasing|Sourcing)|Einkauf|Einkaufsleiter)\b", re.I)),
     ]
     BLACK_LIST_PATTERNS = [
@@ -13,7 +13,6 @@ class TitleClassifier:
         re.compile(r"\b(Marketing|Brand|Customer Service|Support|Receptionist|Administrat|HR|Human Resources|Accountant|Bookkeeper|Intern|Trainee)\b", re.I),
         re.compile(r"\bFinance\b(?!\s+Director)", re.I),
         re.compile(r"\bAssistant\b(?!\s+(?:General\s+Manager|Managing))", re.I),
-        re.compile(r"^Director(?:\s*,)?$", re.I),
     ]
 
     def classify(self, title: str) -> tuple[bool, int]:

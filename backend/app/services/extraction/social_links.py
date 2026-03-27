@@ -20,6 +20,7 @@ LI_BLACKLIST = [r"linkedin\.com/in/", r"linkedin\.com/jobs/", r"linkedin\.com/po
 SCAN_PATHS = ["/", "/contact", "/contact-us", "/kontakt", "/kontakty", "/contacto", "/sobre-nosotros", "/about", "/about-us", "/imprint", "/impressum"]
 LEGAL_SUFFIXES = {"gmbh", "ag", "kg", "ltd", "limited", "llc", "inc", "bv", "b.v", "srl", "s.a", "srl.", "corp", "co"}
 GENERIC_TERMS = {"about", "about us", "contact", "home", "company", "unternehmen", "official"}
+COMPANY_STOPWORDS = GENERIC_TERMS | LEGAL_SUFFIXES | {"group", "global", "holding", "holdings"}
 USER_AGENTS = [
     "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36",
     "Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36",
@@ -90,17 +91,17 @@ def _build_search_terms(company_name: str, domain: str) -> list[str]:
         if normalized.lower() not in {term.lower() for term in terms}:
             terms.append(normalized)
 
+    host = _normalize_domain(domain)
+    host_root = host.split(".", 1)[0]
+    add(host_root.replace("-", " "))
+    add(host_root)
+
     cleaned_company = re.sub(r"^https?://", "", (company_name or "").strip(), flags=re.I).removeprefix("www.")
     add(cleaned_company)
     stripped_company = " ".join(
         token for token in re.split(r"\s+", cleaned_company) if token.lower().strip(".,") not in LEGAL_SUFFIXES
     ).strip()
     add(stripped_company)
-
-    host = _normalize_domain(domain)
-    host_root = host.split(".", 1)[0]
-    add(host_root.replace("-", " "))
-    add(host_root)
     return terms
 
 
@@ -129,6 +130,42 @@ def _extract_from_html(html: str, base_url: str | None = None) -> tuple[Optional
     return fb, li
 
 
+def _company_tokens(company_name: str, domain: str) -> list[str]:
+    tokens: list[str] = []
+    host = _normalize_domain(domain)
+    host_root = host.split(".", 1)[0]
+    for raw in [company_name or "", host_root.replace("-", " "), host_root]:
+        for token in re.split(r"[^a-z0-9]+", raw.lower()):
+            if len(token) < 3 or token in COMPANY_STOPWORDS:
+                continue
+            if token not in tokens:
+                tokens.append(token)
+    return tokens
+
+
+def _linkedin_candidate_matches(item: dict, company_name: str, domain: str) -> bool:
+    normalized = _normalize_li_company(item.get("link"))
+    if not normalized:
+        return False
+    tokens = _company_tokens(company_name, domain)
+    if not tokens:
+        return False
+    slug_match = re.search(r"/company/([a-zA-Z0-9_-]+)", normalized)
+    slug = (slug_match.group(1) if slug_match else "").lower().replace("-", " ")
+    searchable = " ".join(
+        part
+        for part in [
+            slug,
+            str(item.get("title") or ""),
+            str(item.get("snippet") or ""),
+        ]
+        if part
+    ).lower()
+    hits = sum(1 for token in tokens if token in searchable)
+    required_hits = 1 if len(tokens) == 1 else min(2, len(tokens))
+    return hits >= required_hits
+
+
 class SocialLinksExtractor:
     def __init__(self, http_client: Optional[httpx.AsyncClient] = None):
         self._client = http_client
@@ -149,10 +186,18 @@ class SocialLinksExtractor:
             track_a = {}
         if isinstance(track_b, Exception):
             track_b = {}
-        return {"facebook": track_a.get("facebook") or track_b.get("facebook"), "linkedin": track_a.get("linkedin") or track_b.get("linkedin")}
+        facebook = track_b.get("facebook") or track_a.get("facebook")
+        linkedin = track_b.get("linkedin") or track_a.get("linkedin")
+        return {
+            "facebook": facebook,
+            "linkedin": linkedin,
+            "facebook_meta": track_b.get("facebook_meta") if track_b.get("facebook") == facebook else track_a.get("facebook_meta"),
+            "linkedin_meta": track_b.get("linkedin_meta") if track_b.get("linkedin") == linkedin else track_a.get("linkedin_meta"),
+        }
 
     async def _track_a(self, company_name: str, domain: str) -> dict:
         fb_url = li_url = None
+        fb_meta = li_meta = None
         search_terms = _build_search_terms(company_name, domain)
         try:
             for term in search_terms:
@@ -162,6 +207,12 @@ class SocialLinksExtractor:
                         normalized = _normalize_fb(item.get("link", ""))
                         if normalized:
                             fb_url = normalized
+                            fb_meta = {
+                                "source_type": "search",
+                                "source_url": normalized,
+                                "extractor": "serper_facebook_fallback",
+                                "source_hint": q,
+                            }
                             break
                     if fb_url:
                         break
@@ -175,8 +226,14 @@ class SocialLinksExtractor:
                     result = await call_serper(q, num=5)
                     for item in result.get("organic", []):
                         normalized = _normalize_li_company(item.get("link", ""))
-                        if normalized:
+                        if normalized and _linkedin_candidate_matches(item, company_name, domain):
                             li_url = normalized
+                            li_meta = {
+                                "source_type": "search",
+                                "source_url": normalized,
+                                "extractor": "serper_linkedin_company_fallback",
+                                "source_hint": f'{q} | {item.get("title", "")}',
+                            }
                             break
                     if li_url:
                         break
@@ -184,11 +241,12 @@ class SocialLinksExtractor:
                     break
         except Exception:
             pass
-        return {"facebook": fb_url, "linkedin": li_url}
+        return {"facebook": fb_url, "linkedin": li_url, "facebook_meta": fb_meta, "linkedin_meta": li_meta}
 
     async def _track_b(self, domain: str) -> dict:
         client = await self._get_client()
         fb_url = li_url = None
+        fb_meta = li_meta = None
         deadline = asyncio.get_event_loop().time() + 20
         for base_url in _candidate_base_urls(domain):
             for path in SCAN_PATHS:
@@ -204,8 +262,20 @@ class SocialLinksExtractor:
                     pf, pl = _extract_from_html(resp.text, page_url)
                     if pf and not fb_url:
                         fb_url = pf
+                        fb_meta = {
+                            "source_type": "website_dom",
+                            "source_url": page_url,
+                            "extractor": "website_social_dom",
+                            "source_hint": path,
+                        }
                     if pl and not li_url:
                         li_url = pl
+                        li_meta = {
+                            "source_type": "website_dom",
+                            "source_url": page_url,
+                            "extractor": "website_social_dom",
+                            "source_hint": path,
+                        }
                 except Exception:
                     continue
-        return {"facebook": fb_url, "linkedin": li_url}
+        return {"facebook": fb_url, "linkedin": li_url, "facebook_meta": fb_meta, "linkedin_meta": li_meta}

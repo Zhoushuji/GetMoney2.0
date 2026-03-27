@@ -146,12 +146,12 @@ export function OutreachPage() {
     : ['No next actions are available yet.'];
 
   return (
-    <div style={{ display: 'grid', gap: 16 }}>
+    <div className="page-stack">
       <section className="panel">
-        <div style={{ display: 'flex', justifyContent: 'space-between', gap: 12, flexWrap: 'wrap', alignItems: 'center' }}>
-          <div>
-            <h2 style={{ marginTop: 0 }}>客户触达与商业拓展</h2>
-            <p style={{ marginBottom: 0 }}>
+        <div className="page-heading">
+          <div className="title-stack">
+            <h2>客户触达与商业拓展</h2>
+            <p>
               基于当前 lead/contact 数据生成确定性预览，不依赖外部 LLM。任务切换后会自动刷新。
             </p>
           </div>
@@ -159,7 +159,7 @@ export function OutreachPage() {
             {loading ? '加载中…' : '刷新预览'}
           </button>
         </div>
-        <div className="tag-list" style={{ marginTop: 12 }}>
+        <div className="tag-list">
           <span className="tag">{resolvedTaskTag}</span>
           <span className="tag">{statusTag}</span>
           {preview.task_progress != null ? <span className="tag">Progress {preview.task_progress}%</span> : null}
@@ -169,15 +169,15 @@ export function OutreachPage() {
       </section>
 
       <section className="panel">
-        <div style={{ display: 'grid', gridTemplateColumns: 'repeat(auto-fit, minmax(160px, 1fr))', gap: 12 }}>
+        <div className="stats-grid">
           {summaryCards.map((card) => (
             <div key={card.label} className="kpi-card">
               <strong style={{ fontSize: 28, display: 'block' }}>{card.value}</strong>
-              <p style={{ margin: '4px 0 0', color: 'var(--color-muted)' }}>{card.label}</p>
+              <p>{card.label}</p>
             </div>
           ))}
         </div>
-        <div className="kpi-grid" style={{ marginTop: 12 }}>
+        <div className="kpi-grid">
           <div className="kpi-card"><strong>{preview.task_status ?? 'n/a'}</strong><p>Task status</p></div>
           <div className="kpi-card"><strong>{preview.contactable_lead_count ?? 0}</strong><p>Leads with indexed contacts</p></div>
           <div className="kpi-card"><strong>{preview.status}</strong><p>Preview state</p></div>
@@ -186,20 +186,20 @@ export function OutreachPage() {
 
       {loading ? (
         <section className="panel">
-          <h3 style={{ marginTop: 0 }}>正在生成预览</h3>
-          <p style={{ marginBottom: 0 }}>正在读取当前任务的 lead 和 contact 数据，稍后会显示推荐渠道与首封消息草案。</p>
+          <h3>正在生成预览</h3>
+          <p>正在读取当前任务的 lead 和 contact 数据，稍后会显示推荐渠道与首封消息草案。</p>
         </section>
       ) : error ? (
         <section className="panel">
-          <h3 style={{ marginTop: 0 }}>加载失败</h3>
-          <p style={{ marginBottom: 12 }}>{error}</p>
+          <h3>加载失败</h3>
+          <p>{error}</p>
           <button className="button secondary" type="button" onClick={() => void loadPreview()}>
             重试
           </button>
         </section>
       ) : preview.status === 'empty' ? (
         <section className="panel">
-          <h3 style={{ marginTop: 0 }}>{isRunning ? '任务仍在生成预览' : '暂无可执行触达数据'}</h3>
+          <h3>{isRunning ? '任务仍在生成预览' : '暂无可执行触达数据'}</h3>
           <p>
             {isRunning
               ? '当前 discovery 任务还在运行，预览会在任务完成后生成。你可以稍后刷新查看最新结果。'
@@ -212,18 +212,18 @@ export function OutreachPage() {
       ) : (
         <>
           <section className="panel">
-            <h3 style={{ marginTop: 0 }}>推荐渠道</h3>
-            <div style={{ display: 'grid', gap: 12 }}>
+            <h3>推荐渠道</h3>
+            <div className="page-stack">
               {preview.recommended_channels.length > 0 ? preview.recommended_channels.map((item) => (
-                <div key={item.channel} className="panel" style={{ marginBottom: 0, padding: 16 }}>
-                  <div style={{ display: 'flex', justifyContent: 'space-between', gap: 12, flexWrap: 'wrap' }}>
+                <div key={item.channel} className="surface-card surface-card-soft">
+                  <div className="page-heading">
                     <strong>{renderChannelLabel(item.channel)}</strong>
                     <span className="tag">覆盖 {item.count}</span>
                   </div>
-                  <p style={{ margin: '8px 0 0', color: 'var(--color-muted)' }}>{item.reason}</p>
+                  <p className="muted-text">{item.reason}</p>
                 </div>
               )) : (
-                <p style={{ marginBottom: 0 }}>
+                <p>
                   当前没有足够的渠道信号。先补充联系人数据，或者刷新查看最新的 discovery 结果。
                 </p>
               )}
@@ -231,32 +231,32 @@ export function OutreachPage() {
           </section>
 
           <section className="panel">
-            <h3 style={{ marginTop: 0 }}>消息草案</h3>
-            <div style={{ display: 'grid', gap: 12 }}>
+            <h3>消息草案</h3>
+            <div className="page-stack">
               {preview.message_recommendations.length > 0 ? preview.message_recommendations.map((item) => (
-                <div key={item.channel} className="panel" style={{ marginBottom: 0, padding: 16 }}>
-                  <div style={{ display: 'flex', justifyContent: 'space-between', gap: 12, flexWrap: 'wrap' }}>
+                <div key={item.channel} className="surface-card surface-card-soft">
+                  <div className="page-heading">
                     <strong>{renderChannelLabel(item.channel)}</strong>
                     <span className="tag">{item.subject}</span>
                   </div>
-                  <pre style={{ whiteSpace: 'pre-wrap', margin: '12px 0 0', fontFamily: 'inherit' }}>{item.body}</pre>
+                  <pre className="message-body">{item.body}</pre>
                 </div>
               )) : (
-                <p style={{ marginBottom: 0 }}>当前没有可生成的消息草案，先确认有没有可用的联系方式。</p>
+                <p>当前没有可生成的消息草案，先确认有没有可用的联系方式。</p>
               )}
             </div>
           </section>
 
           <section className="panel">
-            <h3 style={{ marginTop: 0 }}>示例触达对象</h3>
-            <div style={{ display: 'grid', gap: 12 }}>
+            <h3>示例触达对象</h3>
+            <div className="page-stack">
               {preview.sample_targets.length > 0 ? preview.sample_targets.slice(0, 5).map((item) => (
-                <div key={item.lead_id} className="panel" style={{ marginBottom: 0, padding: 16 }}>
+                <div key={item.lead_id} className="surface-card surface-card-soft">
                   <strong>{item.company_name ?? 'Unknown company'}</strong>
-                  <p style={{ margin: '6px 0 0', color: 'var(--color-muted)' }}>
+                  <p className="muted-text">
                     {item.contact_name ? `${item.contact_name}${item.contact_title ? ` · ${item.contact_title}` : ''}` : '未挖掘到明确联系人'}
                   </p>
-                  <div className="tag-list" style={{ marginTop: 8 }}>
+                  <div className="tag-list">
                     {item.country ? <span className="tag">{item.country}</span> : null}
                     {item.channels.map((channel) => <span key={channel} className="tag">{renderChannelLabel(channel)}</span>)}
                   </div>
@@ -268,11 +268,11 @@ export function OutreachPage() {
           </section>
 
           <section className="panel">
-            <h3 style={{ marginTop: 0 }}>下一步</h3>
+            <h3>下一步</h3>
             <ul>
               {nextActions.map((item) => <li key={item}>{item}</li>)}
             </ul>
-            {preview.generated_at ? <p style={{ marginBottom: 0, color: 'var(--color-muted)' }}>Generated at {preview.generated_at}</p> : null}
+            {preview.generated_at ? <p className="muted-text">Generated at {preview.generated_at}</p> : null}
           </section>
         </>
       )}

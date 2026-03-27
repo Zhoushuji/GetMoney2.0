@@ -19,6 +19,8 @@ from app.services.workspace_store import CONTACT_TASK_TYPE, get_contact_list, ge
 
 router = APIRouter(prefix="/contacts", tags=["contacts"])
 logger = logging.getLogger(__name__)
+DECISION_PROVENANCE_FIELDS = ("contact_name", "contact_title", "linkedin_personal_url", "personal_email", "work_email")
+GENERAL_PROVENANCE_FIELDS = ("phone", "whatsapp", "potential_contacts")
 
 
 def _update_lead_contact_status(lead: Lead, status: str, error: str | None = None) -> None:
@@ -72,6 +74,12 @@ def _clear_decision_summary(lead: Lead) -> None:
     lead.linkedin_personal_url = None
     lead.personal_email = None
     lead.work_email = None
+    raw_data = dict(lead.raw_data or {})
+    field_provenance = dict(raw_data.get("field_provenance") or {})
+    for field_key in DECISION_PROVENANCE_FIELDS:
+        field_provenance.pop(field_key, None)
+    raw_data["field_provenance"] = field_provenance
+    lead.raw_data = raw_data
 
 
 def _clear_general_summary(lead: Lead) -> None:
@@ -79,6 +87,12 @@ def _clear_general_summary(lead: Lead) -> None:
     lead.whatsapp = None
     lead.general_emails = []
     lead.potential_contacts = None
+    raw_data = dict(lead.raw_data or {})
+    field_provenance = dict(raw_data.get("field_provenance") or {})
+    for field_key in GENERAL_PROVENANCE_FIELDS:
+        field_provenance.pop(field_key, None)
+    raw_data["field_provenance"] = field_provenance
+    lead.raw_data = raw_data
 
 
 async def _mark_contact_task(task_id: UUID, *, status: str | None = None, completed: int | None = None, progress: int | None = None, phase: str | None = None) -> None:
@@ -155,9 +169,73 @@ async def _persist_enrichment_result(
 
         error_exc = decision_exc or general_exc
         _set_dual_status(lead, decision_status, general_status, error=str(error_exc) if error_exc else None, error_details=_build_error_details(error_exc, lead))
+        raw_data = dict(lead.raw_data or {})
+        field_provenance = dict(raw_data.get("field_provenance") or {})
+        if decision_contacts:
+            best = decision_contacts[0]
+            decision_source_url = next((item for item in (best.source_urls or []) if item), None) or best.linkedin_personal_url
+            source_hint = best.linkedin_personal_url or decision_source_url
+            field_provenance.update(
+                {
+                    "contact_name": {
+                        "source_type": "decision_maker",
+                        "source_url": decision_source_url,
+                        "extractor": "decision_maker_enrichment",
+                        "source_hint": source_hint,
+                    },
+                    "contact_title": {
+                        "source_type": "decision_maker",
+                        "source_url": decision_source_url,
+                        "extractor": "decision_maker_enrichment",
+                        "source_hint": source_hint,
+                    },
+                    "linkedin_personal_url": {
+                        "source_type": "decision_maker",
+                        "source_url": best.linkedin_personal_url or decision_source_url,
+                        "extractor": "decision_maker_enrichment",
+                        "source_hint": best.title,
+                    } if best.linkedin_personal_url or decision_source_url else None,
+                    "personal_email": {
+                        "source_type": "decision_maker",
+                        "source_url": decision_source_url,
+                        "extractor": "decision_maker_enrichment",
+                        "source_hint": best.personal_email,
+                    } if best.personal_email else None,
+                    "work_email": {
+                        "source_type": "decision_maker",
+                        "source_url": decision_source_url,
+                        "extractor": "decision_maker_enrichment",
+                        "source_hint": best.work_email,
+                    } if best.work_email else None,
+                }
+            )
+        if potential_contacts:
+            potential_source_url = next((item for item in potential_contacts.get("source_urls", []) if item), None) or lead.website
+            if lead.phone:
+                field_provenance["phone"] = {
+                    "source_type": "potential_contacts",
+                    "source_url": potential_source_url,
+                    "extractor": "potential_contacts_scan",
+                    "source_hint": lead.phone,
+                }
+            if lead.whatsapp:
+                field_provenance["whatsapp"] = {
+                    "source_type": "potential_contacts",
+                    "source_url": potential_source_url,
+                    "extractor": "potential_contacts_scan",
+                    "source_hint": lead.whatsapp,
+                }
+            if lead.potential_contacts:
+                field_provenance["potential_contacts"] = {
+                    "source_type": "potential_contacts",
+                    "source_url": potential_source_url,
+                    "extractor": "potential_contacts_scan",
+                    "source_hint": ", ".join((lead.potential_contacts or {}).get("items", [])[:3]),
+                }
         lead.raw_data = {
-            **(lead.raw_data or {}),
+            **raw_data,
             "last_contact_mode": mode,
+            "field_provenance": {key: value for key, value in field_provenance.items() if value},
         }
         await session.commit()
 

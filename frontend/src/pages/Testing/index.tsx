@@ -48,26 +48,8 @@ function formatError(error: unknown) {
 }
 
 function StatusBadge({ tone, children }: { tone: 'neutral' | 'good' | 'warn' | 'bad'; children: string }) {
-  const palette = {
-    neutral: { bg: '#f3f4f6', fg: '#374151' },
-    good: { bg: '#dcfce7', fg: '#166534' },
-    warn: { bg: '#fef3c7', fg: '#92400e' },
-    bad: { bg: '#fee2e2', fg: '#991b1b' },
-  }[tone];
-
   return (
-    <span
-      style={{
-        display: 'inline-flex',
-        alignItems: 'center',
-        padding: '4px 10px',
-        borderRadius: 999,
-        background: palette.bg,
-        color: palette.fg,
-        fontSize: 12,
-        fontWeight: 600,
-      }}
-    >
+    <span className={`status-badge status-badge-${tone}`}>
       {children}
     </span>
   );
@@ -87,13 +69,13 @@ function CheckCard({
   const tone = state.status === 'ok' ? 'good' : state.status === 'error' ? 'bad' : state.status === 'loading' ? 'warn' : 'neutral';
 
   return (
-    <div style={{ padding: 20, border: '1px solid #e5e7eb', borderRadius: 16, background: '#fff', display: 'grid', gap: 12 }}>
-      <div style={{ display: 'flex', justifyContent: 'space-between', gap: 12, alignItems: 'center' }}>
+    <div className="surface-card surface-card-soft" style={{ display: 'grid', gap: 12 }}>
+      <div className="page-heading">
         <strong>{title}</strong>
         <StatusBadge tone={tone}>{state.status.toUpperCase()}</StatusBadge>
       </div>
-      <p style={{ margin: 0, color: '#374151' }}>{state.message}</p>
-      <p style={{ margin: 0, color: '#6b7280', fontSize: 13 }}>Endpoint：{endpoint}</p>
+      <p className="muted-text" style={{ fontSize: 14 }}>{state.message}</p>
+      <p className="muted-text" style={{ fontSize: 13 }}>Endpoint：{endpoint}</p>
       <div style={{ display: 'grid', gap: 6, color: '#6b7280', fontSize: 13 }}>
         <div>检查时间：{state.checkedAt ?? '-'}</div>
         <div>耗时：{formatDuration(state.durationMs)}</div>
@@ -224,56 +206,33 @@ export function TestingPage() {
   const smokeOk = healthCheck.status === 'ok' && (!hasTaskContext || (taskCheck.status === 'ok' && leadCheck.status === 'ok'));
 
   return (
-    <div style={{ display: 'grid', gap: 20 }}>
-      <section
-        style={{
-          padding: 24,
-          border: '1px solid #e5e7eb',
-          borderRadius: 18,
-          background: 'linear-gradient(180deg, #ffffff 0%, #f8fafc 100%)',
-          boxShadow: '0 1px 3px rgba(15, 23, 42, 0.08)',
-        }}
-      >
-        <div style={{ display: 'flex', justifyContent: 'space-between', gap: 16, flexWrap: 'wrap', alignItems: 'flex-start' }}>
-          <div style={{ display: 'grid', gap: 8 }}>
-            <div>
-              <h2 style={{ margin: 0, fontSize: 26 }}>Testing / Smoke Check</h2>
-              <p style={{ margin: '8px 0 0', color: '#6b7280' }}>
+    <div className="page-stack">
+      <section className="panel panel-soft">
+        <div className="page-heading">
+          <div className="title-stack">
+            <h2>Testing / Smoke Check</h2>
+            <p>
                 检查后端可达性，并拆分展示当前 task、线索摘要和健康探测结果。
-              </p>
-            </div>
-            <div style={{ display: 'flex', gap: 8, flexWrap: 'wrap' }}>
-              <StatusBadge tone={hasTaskContext ? 'good' : 'neutral'}>
-                {hasTaskContext ? '已绑定 task' : '未绑定 task'}
-              </StatusBadge>
-              <StatusBadge tone={smokeOk ? 'good' : 'warn'}>
-                {smokeOk ? 'SMOKE PASS' : 'SMOKE CHECK'}
-              </StatusBadge>
-              <StatusBadge tone={lastRunAt ? 'neutral' : 'neutral'}>
-                {lastRunAt ? `最后运行：${lastRunAt}` : '尚未运行'}
-              </StatusBadge>
-            </div>
+            </p>
           </div>
-          <button
-            type="button"
-            onClick={() => void runChecks()}
-            disabled={loading}
-            style={{
-              border: 0,
-              borderRadius: 12,
-              padding: '12px 16px',
-              cursor: loading ? 'not-allowed' : 'pointer',
-              background: '#111827',
-              color: '#ffffff',
-              fontWeight: 600,
-            }}
-          >
+          <button className="button" type="button" onClick={() => void runChecks()} disabled={loading}>
             {loading ? '检查中…' : '重新检查'}
           </button>
         </div>
+        <div className="tag-list">
+          <StatusBadge tone={hasTaskContext ? 'good' : 'neutral'}>
+            {hasTaskContext ? '已绑定 task' : '未绑定 task'}
+          </StatusBadge>
+          <StatusBadge tone={smokeOk ? 'good' : 'warn'}>
+            {smokeOk ? 'SMOKE PASS' : 'SMOKE CHECK'}
+          </StatusBadge>
+          <StatusBadge tone={lastRunAt ? 'neutral' : 'neutral'}>
+            {lastRunAt ? `最后运行：${lastRunAt}` : '尚未运行'}
+          </StatusBadge>
+        </div>
       </section>
 
-      <section style={{ display: 'grid', gridTemplateColumns: 'repeat(auto-fit, minmax(260px, 1fr))', gap: 16 }}>
+      <section className="stats-grid">
         <CheckCard title="后端健康" endpoint="/health" state={healthCheck}>
           <div style={{ display: 'grid', gap: 4, color: '#4b5563', fontSize: 14 }}>
             <div>检查结论：{healthCheck.status === 'ok' ? '通过' : healthCheck.status === 'error' ? '失败' : '待检查'}</div>
@@ -297,8 +256,8 @@ export function TestingPage() {
         </CheckCard>
       </section>
 
-      <section style={{ padding: 20, border: '1px solid #e5e7eb', borderRadius: 16, background: '#fff' }}>
-        <h3 style={{ margin: '0 0 12px' }}>Smoke Check Summary</h3>
+      <section className="panel panel-soft">
+        <h3>Smoke Check Summary</h3>
         <div style={{ display: 'grid', gap: 10, color: '#374151' }}>
           <div>健康检查：{healthCheck.status === 'ok' ? '通过' : healthCheck.status === 'error' ? '失败' : '未完成'}</div>
           <div>任务绑定：{taskId ? '已连接到当前 task' : '未检测到当前 task'}</div>
@@ -325,7 +284,7 @@ export function TestingPage() {
           </div>
         ) : null}
 
-        <p style={{ margin: '16px 0 0', color: '#6b7280', fontSize: 13 }}>
+        <p className="muted-text" style={{ marginTop: 16, fontSize: 13 }}>
           这页只负责 smoke check 和诊断可视化；如果后端路由或代理层没接好，会在对应卡片里显示具体失败点。
         </p>
       </section>

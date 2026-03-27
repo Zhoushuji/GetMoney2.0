@@ -33,8 +33,13 @@ export function TaskProgressCard({
   const progressClassName = targetReached || stoppedEarly ? 'progress-bar progress-bar-success' : 'progress-bar';
 
   return (
-    <section className="panel">
-      <h2>任务进度</h2>
+    <section className="panel section-panel panel-soft">
+      <div className="page-heading">
+        <div className="title-stack">
+          <h2>任务进度</h2>
+          <p>任务运行中会持续刷新阶段、预计剩余时间和已确认结果。</p>
+        </div>
+      </div>
       <div className="kpi-grid">
         <div className="stat-card"><strong>状态</strong><p>{status}</p></div>
         <div className="stat-card"><strong>已派发 / 总数</strong><p>{completed} / {total}</p></div>

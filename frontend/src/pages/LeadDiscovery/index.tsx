@@ -3,9 +3,10 @@ import { AxiosError } from 'axios';
 import { Link } from 'react-router-dom';
 
 import { apiClient } from '../../api/client';
-import { useWorkspaceContext } from '../../components/Layout/AppLayout';
+import { type WorkspaceTaskSummary, useWorkspaceContext } from '../../components/Layout/AppLayout';
+import { formatTaskKeywordTitle, extractTaskKeywords } from '../../components/Layout/taskSummary';
 import { LeadSearchForm, LeadSearchPayload } from '../../components/SearchForm/LeadSearchForm';
-import { LeadTable, LeadRow } from '../../components/DataTable/LeadTable';
+import { LeadReviewAnnotation, LeadTable, LeadRow } from '../../components/DataTable/LeadTable';
 import { TaskProgressCard } from '../../components/TaskProgress/TaskProgressCard';
 import { useTaskStore } from '../../stores/useTaskStore';
 
@@ -72,6 +73,30 @@ function StepCard({ step, title, status }: { step: string; title: string; status
 function normalizeSearchMode(value?: string | null): 'live' | 'demo' | undefined {
   if (value === 'live' || value === 'demo') return value;
   return undefined;
+}
+
+function formatTaskCountrySummary(task?: WorkspaceTaskSummary | null): string {
+  return (task?.params?.countries ?? []).join('、') || '未指定国家';
+}
+
+function formatTaskModeLabel(mode?: string | null): string {
+  return mode === 'demo' ? '演示模式' : '实时搜索';
+}
+
+function formatTaskUpdatedAt(value?: string | null): string {
+  if (!value) return '未更新';
+  const parsed = new Date(value);
+  return Number.isNaN(parsed.getTime()) ? value : parsed.toLocaleString();
+}
+
+function formatTaskOptionLabel(task: WorkspaceTaskSummary): string {
+  return [
+    formatTaskKeywordTitle(task.params, '未命名任务'),
+    formatTaskCountrySummary(task),
+    task.status,
+    `线索 ${task.lead_count}`,
+    `关键人 ${task.decision_maker_done_count}`,
+  ].join(' · ');
 }
 
 export function LeadDiscoveryPage() {
@@ -292,6 +317,22 @@ export function LeadDiscoveryPage() {
     window.URL.revokeObjectURL(url);
   };
 
+  const handleReviewAnnotationChange = (leadId: string, fieldKey: string, annotation: LeadReviewAnnotation | null) => {
+    setRows((current) => current.map((row) => {
+      if (row.id !== leadId) return row;
+      const nextAnnotations = { ...(row.review_annotations ?? {}) };
+      if (annotation) {
+        nextAnnotations[fieldKey] = annotation;
+      } else {
+        delete nextAnnotations[fieldKey];
+      }
+      return {
+        ...row,
+        review_annotations: Object.keys(nextAnnotations).length > 0 ? nextAnnotations : null,
+      };
+    }));
+  };
+
   const step1Status = isSubmitting ? 'active' : rows.length > 0 ? 'done' : 'pending';
   const step2Unlocked = rows.length > 0;
   const step2Status = !step2Unlocked ? 'pending' : rows.some((row) => row.decision_maker_status === 'running' || row.general_contact_status === 'running') ? 'active' : rows.some((row) => row.decision_maker_status === 'done' || row.general_contact_status === 'done') ? 'done' : 'pending';
@@ -299,9 +340,12 @@ export function LeadDiscoveryPage() {
   const formInitialValues = useMemo(() => {
     if (!activeTaskSummary?.params) return null;
     const { mode: rawMode, ...taskParams } = activeTaskSummary.params;
+    const keywords = extractTaskKeywords(activeTaskSummary.params);
     const mode = normalizeSearchMode(rawMode);
     return {
       ...taskParams,
+      keywords,
+      product_name: keywords[0] ?? taskParams.product_name ?? '',
       target_count: activeTaskSummary.target_count ?? null,
       ...(mode ? { mode } : {}),
     } satisfies Partial<LeadSearchPayload>;
@@ -318,19 +362,21 @@ export function LeadDiscoveryPage() {
     if (!taskStatus || taskStatus.status !== 'running') return null;
     return <TaskProgressCard status={taskStatus.status} progress={taskStatus.progress} total={taskStatus.total} completed={taskStatus.completed} confirmedLeads={taskStatus.confirmed_leads} targetCount={taskStatus.target_count} phase={taskStatus.phase} estimatedTotalSeconds={taskStatus.estimated_total_seconds} estimatedRemainingSeconds={taskStatus.estimated_remaining_seconds} stoppedEarly={taskStatus.stopped_early} />;
   }, [taskStatus]);
+  const displayedTaskSummary = activeTaskSummary ?? taskHistory[0] ?? null;
+  const selectedTaskId = activeTaskSummary?.id ?? taskId ?? taskHistory[0]?.id ?? '';
 
   return (
-    <div className="flow-page">
+    <div className="flow-page page-stack">
       {taskError ? (
-        <section className="panel section-panel" style={{ borderColor: '#f59e0b', background: '#fffbeb' }}>
+        <section className="panel section-panel notice-panel notice-warning">
           <strong>任务提示</strong>
-          <p className="muted-text" style={{ margin: '8px 0 0' }}>{taskError}</p>
+          <p className="muted-text">{taskError}</p>
         </section>
       ) : null}
       {strictCountryShortfall ? (
-        <section className="panel section-panel" style={{ borderColor: '#93c5fd', background: '#eff6ff' }}>
+        <section className="panel section-panel notice-panel notice-info">
           <strong>国家过滤提示</strong>
-          <p className="muted-text" style={{ margin: '8px 0 0' }}>{strictCountryShortfall}</p>
+          <p className="muted-text">{strictCountryShortfall}</p>
         </section>
       ) : null}
       <section className="step-indicator panel">
@@ -342,40 +388,91 @@ export function LeadDiscoveryPage() {
       </section>
 
       <section className="panel section-panel">
-        <div className="field-inline">
+        <div className="page-heading">
           <div>
             <h2>最近任务</h2>
-            <p className="muted-text" style={{ margin: '6px 0 0' }}>
+            <p className="muted-text">
               页面刷新后会自动恢复最近一次有效任务，你也可以从这里快速切换到最近 20 条搜索记录。
             </p>
           </div>
-          <div className="toolbar-actions">
-            <button className="button secondary" type="button" onClick={() => void refreshTaskHistory(taskId)} disabled={historyLoading}>
-              {historyLoading ? '刷新中…' : '刷新任务记录'}
-            </button>
-            <Link className="button secondary" to="/history">查看全部记录</Link>
-          </div>
         </div>
         {historyError ? <p className="field-error" style={{ marginBottom: 16 }}>{historyError}</p> : null}
-        <div className="history-task-list">
-          {taskHistory.length > 0 ? taskHistory.map((item) => (
-            <button
-              key={item.id}
-              type="button"
-              className={`history-task-card${item.id === taskId ? ' is-active' : ''}`}
-              onClick={() => setTaskId(item.id)}
-            >
-              <strong>{item.params?.product_name || '未命名任务'}</strong>
-              <span>{(item.params?.countries || []).join('、') || '未指定国家'}</span>
-              <small>{item.status} · 线索 {item.lead_count} · 关键人 {item.decision_maker_done_count}</small>
-            </button>
-          )) : (
-            <div className="muted-text">暂无历史任务。先运行一次搜索，结果会自动保留。</div>
-          )}
-        </div>
+        {taskHistory.length > 0 ? (
+          <div className="task-picker-stack">
+            <div className="task-picker-controls">
+              <label className="field task-picker-field">
+                <span>选择最近任务</span>
+                <select
+                  className="select task-picker-select"
+                  value={selectedTaskId}
+                  onChange={(event) => setTaskId(event.target.value || undefined)}
+                  disabled={historyLoading}
+                >
+                  {taskHistory.map((item) => (
+                    <option key={item.id} value={item.id}>
+                      {formatTaskOptionLabel(item)}
+                    </option>
+                  ))}
+                </select>
+              </label>
+              <div className="toolbar-actions task-picker-actions">
+                <button className="button secondary" type="button" onClick={() => void refreshTaskHistory(taskId)} disabled={historyLoading}>
+                  {historyLoading ? '刷新中…' : '刷新任务记录'}
+                </button>
+                <Link className="button secondary" to="/history">查看全部记录</Link>
+              </div>
+            </div>
+            {displayedTaskSummary ? (
+              <div className="task-summary-card">
+                <div className="task-summary-head">
+                  <div className="title-stack">
+                    <strong>{formatTaskKeywordTitle(displayedTaskSummary.params, '未命名任务')}</strong>
+                    <p className="muted-text">当前任务会驱动结果表、联系人挖掘和触达页的上下文。</p>
+                  </div>
+                  <div className="task-summary-tags">
+                    <span className="tag">{displayedTaskSummary.status}</span>
+                    <span className="tag">{formatTaskModeLabel(displayedTaskSummary.params?.mode)}</span>
+                  </div>
+                </div>
+                <div className="task-summary-grid">
+                  <div className="task-summary-item">
+                    <span>关键词摘要</span>
+                    <strong>{formatTaskKeywordTitle(displayedTaskSummary.params, '未命名任务')}</strong>
+                  </div>
+                  <div className="task-summary-item">
+                    <span>国家 / 地区</span>
+                    <strong>{formatTaskCountrySummary(displayedTaskSummary)}</strong>
+                  </div>
+                  <div className="task-summary-item">
+                    <span>模式</span>
+                    <strong>{formatTaskModeLabel(displayedTaskSummary.params?.mode)}</strong>
+                  </div>
+                  <div className="task-summary-item">
+                    <span>状态</span>
+                    <strong>{displayedTaskSummary.status}</strong>
+                  </div>
+                  <div className="task-summary-item">
+                    <span>已确认线索</span>
+                    <strong>{displayedTaskSummary.confirmed_leads}</strong>
+                  </div>
+                  <div className="task-summary-item">
+                    <span>已完成关键人</span>
+                    <strong>{displayedTaskSummary.decision_maker_done_count}</strong>
+                  </div>
+                  <div className="task-summary-item">
+                    <span>最近更新时间</span>
+                    <strong>{formatTaskUpdatedAt(displayedTaskSummary.updated_at)}</strong>
+                  </div>
+                </div>
+              </div>
+            ) : null}
+          </div>
+        ) : (
+          <div className="muted-text">暂无历史任务。先运行一次搜索，结果会自动保留。</div>
+        )}
       </section>
 
-      <section className="section-panel">
+      <section className="section-panel panel panel-soft">
         <h2>▼ STEP 1 — 潜在客户发现</h2>
         <LeadSearchForm
           isSubmitting={isSubmitting}
@@ -409,7 +506,7 @@ export function LeadDiscoveryPage() {
 
       <section className="section-panel">
         <h2>▼ 统一结果表格（STEP 1 + STEP 2 共用）</h2>
-        <div className="result-toolbar panel">
+        <div className="toolbar-card">
           <div className="toolbar-actions">
             <button className="button secondary" type="button" disabled={!step2Unlocked} onClick={() => setSelectedIds(rows.map((row) => row.id))}>☑ 全选</button>
             <button className="button" type="button" disabled={!step2Unlocked} onClick={() => runContactQueue(rows.map((row) => row.id), 'decision_maker')}>查找关键人</button>
@@ -420,6 +517,7 @@ export function LeadDiscoveryPage() {
           <div className="toolbar-actions">
             <button className="export-btn export-btn-excel" type="button" disabled={!step2Unlocked} onClick={() => exportResults('xlsx')}>↓ Excel</button>
             <button className="export-btn export-btn-csv" type="button" disabled={!step2Unlocked} onClick={() => exportResults('csv')}>↓ CSV</button>
+            <Link className="button secondary" to="/reviews">字段审核记录</Link>
           </div>
         </div>
         <LeadTable
@@ -439,6 +537,7 @@ export function LeadDiscoveryPage() {
             setPage(1);
             setPageSize(nextPageSize);
           }}
+          onReviewAnnotationChange={handleReviewAnnotationChange}
         />
       </section>
 

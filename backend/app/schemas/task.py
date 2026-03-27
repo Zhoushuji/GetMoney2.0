@@ -1,7 +1,7 @@
 from datetime import datetime
 from uuid import UUID
 
-from pydantic import BaseModel
+from pydantic import BaseModel, Field
 
 
 class TaskCreateResponse(BaseModel):
@@ -34,14 +34,23 @@ class TaskStatusResponse(BaseModel):
 
 class TaskChildSummaryResponse(BaseModel):
     id: UUID
+    type: str | None = None
     status: str
     progress: int
+    confirmed_leads: int = 0
     mode: str | None = None
+    keyword: str | None = None
+    cache_hit: bool = False
     updated_at: datetime | None = None
 
 
 class TaskSummaryResponse(TaskStatusResponse):
     params: dict | None = None
+    keywords: list[str] = Field(default_factory=list)
+    keyword_count: int = 0
+    completed_keyword_count: int = 0
+    cache_hit_keyword_count: int = 0
+    keyword_tasks: list[TaskChildSummaryResponse] = Field(default_factory=list)
     lead_count: int = 0
     decision_maker_done_count: int = 0
     general_contact_done_count: int = 0

@@ -9,6 +9,7 @@ import { ContactIntelligencePage } from './pages/ContactIntelligence';
 import { OutreachPage } from './pages/Outreach';
 import { TestingPage } from './pages/Testing';
 import { HistoryPage } from './pages/History';
+import { ReviewsPage } from './pages/Reviews';
 import './styles/global.css';
 
 const queryClient = new QueryClient();
@@ -21,6 +22,7 @@ ReactDOM.createRoot(document.getElementById('root')!).render(
           <Route path="/" element={<AppLayout />}>
             <Route index element={<LeadDiscoveryPage />} />
             <Route path="history" element={<HistoryPage />} />
+            <Route path="reviews" element={<ReviewsPage />} />
             <Route path="contacts" element={<ContactIntelligencePage />} />
             <Route path="outreach" element={<OutreachPage />} />
             <Route path="testing" element={<TestingPage />} />

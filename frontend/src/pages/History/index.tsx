@@ -1,6 +1,7 @@
 import { useNavigate } from 'react-router-dom';
 
 import { useWorkspaceContext } from '../../components/Layout/AppLayout';
+import { formatTaskKeywordTitle } from '../../components/Layout/taskSummary';
 import { useTaskStore } from '../../stores/useTaskStore';
 
 function formatDate(value?: string | null) {
@@ -15,12 +16,12 @@ export function HistoryPage() {
   const { taskId, setTaskId } = useTaskStore();
 
   return (
-    <div className="flow-page">
+    <div className="flow-page page-stack">
       <section className="panel section-panel">
-        <div className="field-inline">
-          <div>
+        <div className="page-heading">
+          <div className="title-stack">
             <h2>任务记录</h2>
-            <p className="muted-text" style={{ margin: '6px 0 0' }}>
+            <p className="muted-text">
               最近 20 条根任务会保留在工作区中，重新打开页面后会自动恢复到最近一次有效任务。
             </p>
           </div>
@@ -31,9 +32,9 @@ export function HistoryPage() {
       </section>
 
       {historyError ? (
-        <section className="panel" style={{ borderColor: '#fecaca', background: '#fef2f2' }}>
+        <section className="panel notice-panel notice-danger">
           <strong>任务记录加载失败</strong>
-          <p className="muted-text" style={{ marginBottom: 0 }}>{historyError}</p>
+          <p className="muted-text">{historyError}</p>
         </section>
       ) : null}
 
@@ -58,7 +59,7 @@ export function HistoryPage() {
                   <td>{index + 1}</td>
                   <td>
                     <div className="company-cell">
-                      <strong>{item.params?.product_name || '未命名搜索任务'}</strong>
+                      <strong>{formatTaskKeywordTitle(item.params, '未命名搜索任务')}</strong>
                       <small>{(item.params?.countries || []).join('、') || '未指定国家'} · {(item.params?.mode || 'live').toUpperCase()}</small>
                     </div>
                   </td>
@@ -84,7 +85,7 @@ export function HistoryPage() {
                 </tr>
               )) : (
                 <tr>
-                  <td colSpan={8} style={{ textAlign: 'center', padding: '28px 16px' }}>
+                  <td colSpan={8} className="empty-state">
                     <span className="muted-text">暂无历史任务。先在潜在客户发现页运行一次搜索。</span>
                   </td>
                 </tr>

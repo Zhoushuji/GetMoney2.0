@@ -16,7 +16,7 @@ USER_AGENTS = [
 LEGAL_SUFFIXES = {"gmbh", "ag", "kg", "ltd", "limited", "llc", "inc", "corp", "co", "bv", "b.v", "srl", "s.a"}
 MAX_COMPANY_TERMS = 2
 MAX_SERPER_RESULTS = 6
-LEADERSHIP_QUERY = 'site:linkedin.com/in/ "{term}" (CEO OR "Chief Executive Officer" OR Founder OR Owner OR President OR "Managing Director" OR "Executive Director" OR "General Manager" OR COO OR "Chief Operating Officer")'
+LEADERSHIP_QUERY = 'site:linkedin.com/in/ "{term}" (CEO OR "Chief Executive Officer" OR Founder OR Owner OR President OR Chairman OR "Managing Director" OR "Executive Director" OR Director OR Head OR "General Manager" OR COO OR "Chief Operating Officer" OR "Vice President")'
 PROCUREMENT_QUERY = 'site:linkedin.com/in/ "{term}" (Procurement OR Purchasing OR Sourcing OR "Head of Procurement" OR "Supply Chain")'
 COMPANY_DISCOVER_QUERIES = (
     'site:linkedin.com/company/ "{term}"',
@@ -168,6 +168,7 @@ class LinkedInPeopleFinder:
         normalized = re.sub(r"\bco[\s-]?founder\s*&\s*ceo\b", "Co-Founder CEO", normalized, flags=re.I)
         normalized = re.sub(r"\bfounder\s*/\s*ceo\b", "Founder CEO", normalized, flags=re.I)
         normalized = re.sub(r"\bceo\s*/\s*founder\b", "CEO Founder", normalized, flags=re.I)
+        normalized = re.sub(r"\bvice[\s-]?president\b", "Vice President", normalized, flags=re.I)
         return normalized
 
     async def _path_a(self, company_terms: list[str]) -> list[dict]:

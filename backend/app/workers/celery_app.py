@@ -1,4 +1,5 @@
 from celery import Celery
+from celery.schedules import crontab
 
 from app.config import get_settings
 
@@ -15,4 +16,14 @@ celery_app.conf.update(
     task_soft_time_limit=300,
     task_time_limit=600,
     task_annotations={"workers.lead_tasks.scrape_domain": {"rate_limit": "10/m"}},
+    beat_schedule={
+        "refresh-due-search-keywords-hourly": {
+            "task": "workers.keyword_refresh_tasks.refresh_due_search_keywords",
+            "schedule": crontab(minute=0),
+            "args": (20,),
+        }
+    },
 )
+
+# Import task modules so Celery can register named tasks.
+from app.workers import keyword_refresh_tasks  # noqa: E402,F401

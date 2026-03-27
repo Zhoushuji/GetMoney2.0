@@ -2,8 +2,10 @@ import { FormEvent, useEffect, useMemo, useState } from 'react';
 import { useRef } from 'react';
 
 import { CONTINENTS, LANGUAGE_LABELS, geoData } from '../../data/geo';
+import { extractTaskKeywords } from '../Layout/taskSummary';
 
 export type LeadSearchPayload = {
+  keywords: string[];
   product_name: string;
   continents: string[];
   countries: string[];
@@ -19,7 +21,7 @@ type Props = {
   initialTaskId?: string | null;
 };
 
-type FormErrors = Partial<Record<'product_name' | 'countries' | 'languages' | 'target_count', string>>;
+type FormErrors = Partial<Record<'keywords' | 'countries' | 'languages' | 'target_count', string>>;
 
 const ENGLISH_CODE = 'en';
 const CONTINENT_LABELS: Record<string, string> = {
@@ -33,7 +35,7 @@ const CONTINENT_LABELS: Record<string, string> = {
 
 export function LeadSearchForm({ isSubmitting, onSubmit, initialValues, initialTaskId }: Props) {
   const defaultMode: 'live' | 'demo' = import.meta.env.DEV ? 'demo' : 'live';
-  const [productName, setProductName] = useState('industrial valve');
+  const [keywordInput, setKeywordInput] = useState('industrial valve');
   const [selectedContinents, setSelectedContinents] = useState<string[]>(['Asia']);
   const [selectedCountries, setSelectedCountries] = useState<string[]>(['CN', 'IN']);
   const [selectedLanguages, setSelectedLanguages] = useState<string[]>([ENGLISH_CODE, 'zh']);
@@ -81,7 +83,8 @@ export function LeadSearchForm({ isSubmitting, onSubmit, initialValues, initialT
   useEffect(() => {
     if (!initialValues) return;
     if (initialTaskId && appliedTaskIdRef.current === initialTaskId) return;
-    setProductName(initialValues.product_name ?? '');
+    const keywords = extractTaskKeywords(initialValues);
+    setKeywordInput(keywords.length > 0 ? keywords.join('\n') : '');
     setSelectedContinents(initialValues.continents ?? []);
     setSelectedCountries((initialValues.countries ?? []).map((value) => geoData.find((entry) => entry.name_en === value || entry.code === value)?.code ?? value));
     setSelectedLanguages(initialValues.languages ?? [ENGLISH_CODE]);
@@ -113,10 +116,17 @@ export function LeadSearchForm({ isSubmitting, onSubmit, initialValues, initialT
     });
   };
 
+  const normalizeKeywords = (value: string) => Array.from(new Set(
+    value
+      .split(/[\n,，]+/)
+      .map((keyword) => keyword.trim())
+      .filter(Boolean),
+  ));
+
   const validate = (): LeadSearchPayload | null => {
     const nextErrors: FormErrors = {};
-    const trimmedName = productName.trim();
-    if (!trimmedName) nextErrors.product_name = '请输入产品名称';
+    const keywords = normalizeKeywords(keywordInput);
+    if (keywords.length === 0) nextErrors.keywords = '请至少输入一个关键词';
     if (selectedCountries.length === 0) nextErrors.countries = '请至少选择一个国家/地区';
     if (selectedLanguages.length === 0) nextErrors.languages = '请至少选择一种搜索语言';
 
@@ -130,7 +140,8 @@ export function LeadSearchForm({ isSubmitting, onSubmit, initialValues, initialT
     setErrors(nextErrors);
     if (Object.keys(nextErrors).length > 0) return null;
     return {
-      product_name: trimmedName,
+      keywords,
+      product_name: keywords[0],
       continents: selectedContinents,
       countries: selectedCountries.map((code) => geoData.find((entry) => entry.code === code)?.name_en ?? code),
       languages: selectedLanguages,
@@ -148,11 +159,17 @@ export function LeadSearchForm({ isSubmitting, onSubmit, initialValues, initialT
   return (
     <form className="search-form-stack" onSubmit={submit}>
       <section className="search-block panel">
-        <div className="block-heading"><h3>区块 A：产品信息</h3><div className="block-divider" /></div>
+        <div className="block-heading"><h3>区块 A：搜索关键词</h3><div className="block-divider" /></div>
         <label className="field">
-          <span>产品名称</span>
-          <input className={`input ${errors.product_name ? 'input-error' : ''}`} value={productName} onChange={(e) => setProductName(e.target.value)} placeholder="例如：industrial valve" />
-          {errors.product_name ? <small className="field-error">{errors.product_name}</small> : null}
+          <span>搜索关键词</span>
+          <textarea
+            className={`input input-textarea ${errors.keywords ? 'input-error' : ''}`}
+            value={keywordInput}
+            onChange={(e) => setKeywordInput(e.target.value)}
+            placeholder="每行一个关键词，或使用逗号分隔，例如：\nlaser land leveler\nsoil compactor"
+            rows={4}
+          />
+          {errors.keywords ? <small className="field-error">{errors.keywords}</small> : <small className="field-help">支持每行一个关键词，或使用英文/中文逗号分隔；提交时会自动去重。</small>}
         </label>
       </section>
 
@@ -163,7 +180,7 @@ export function LeadSearchForm({ isSubmitting, onSubmit, initialValues, initialT
           <span>大洲（复选框组）</span>
           <div className="continent-row">
             {CONTINENTS.map((continent) => (
-              <label key={continent} className="chip-checkbox">
+              <label key={continent} className={`chip-checkbox${selectedContinents.includes(continent) ? ' is-selected' : ''}`}>
                 <input type="checkbox" checked={selectedContinents.includes(continent)} onChange={() => toggleContinent(continent)} />
                 <span>{CONTINENT_LABELS[continent] ?? continent}</span>
               </label>
@@ -198,7 +215,7 @@ export function LeadSearchForm({ isSubmitting, onSubmit, initialValues, initialT
                   </div>
                   <div className="country-grid">
                     {group.items.map((entry) => (
-                      <label key={entry.code} className="checkbox-card compact">
+                      <label key={entry.code} className={`checkbox-card compact${selectedCountries.includes(entry.code) ? ' is-selected' : ''}`}>
                         <input type="checkbox" checked={selectedCountries.includes(entry.code)} onChange={() => toggleCountry(entry.code)} />
                         <span className={!entry.name_zh ? "missing-zh" : undefined}>{entry.name_zh ? `${entry.name_zh}（${entry.name_en}）` : `[缺失中文名]（${entry.name_en}）`}</span>
                       </label>
@@ -237,7 +254,7 @@ export function LeadSearchForm({ isSubmitting, onSubmit, initialValues, initialT
           </div>
           <div className={`checkbox-grid ${errors.languages ? 'checkbox-grid-error' : ''}`}>
             {availableLanguages.map((language) => (
-              <label key={language} className="checkbox-card compact">
+              <label key={language} className={`checkbox-card compact${selectedLanguages.includes(language) ? ' is-selected' : ''}`}>
                 <input type="checkbox" checked={selectedLanguages.includes(language)} onChange={() => toggleLanguage(language)} />
                 <span>{LANGUAGE_LABELS[language] ?? language}</span>
               </label>
@@ -258,11 +275,11 @@ export function LeadSearchForm({ isSubmitting, onSubmit, initialValues, initialT
           <div className="field config-field">
             <span>搜索模式</span>
             <div className="continent-row">
-              <label className="chip-checkbox">
+              <label className={`chip-checkbox${searchMode === 'live' ? ' is-selected' : ''}`}>
                 <input type="radio" name="search-mode" checked={searchMode === 'live'} onChange={() => setSearchMode('live')} />
                 <span>实时搜索</span>
               </label>
-              <label className="chip-checkbox">
+              <label className={`chip-checkbox${searchMode === 'demo' ? ' is-selected' : ''}`}>
                 <input type="radio" name="search-mode" checked={searchMode === 'demo'} onChange={() => setSearchMode('demo')} />
                 <span>演示模式</span>
               </label>

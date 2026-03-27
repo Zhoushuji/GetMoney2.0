@@ -315,12 +315,12 @@ export function ContactIntelligencePage() {
   const enrichmentTaskBadge = taskStatusTone(enrichmentTask?.status);
 
   return (
-    <div className="flow-page">
+    <div className="flow-page page-stack">
       <section className="panel">
-        <div className="block-heading">
-          <div>
+        <div className="page-heading">
+          <div className="title-stack">
             <h2>核心联系人挖掘</h2>
-            <p className="muted-text" style={{ margin: '6px 0 0' }}>
+            <p className="muted-text">
               自动读取当前任务，展示已发现的企业列表，并把关键人和潜在联系方式的挖掘进度放在同一页管理。
             </p>
           </div>
@@ -351,9 +351,9 @@ export function ContactIntelligencePage() {
       </section>
 
       {error ? (
-        <section className="panel" style={{ borderColor: '#fecaca', background: '#fef2f2' }}>
+        <section className="panel notice-panel notice-danger">
           <strong>页面刷新失败</strong>
-          <p className="muted-text" style={{ marginBottom: 0 }}>{error}</p>
+          <p className="muted-text">{error}</p>
         </section>
       ) : null}
 
@@ -369,7 +369,7 @@ export function ContactIntelligencePage() {
       ) : (
         <>
           <section className="panel">
-            <div className="block-heading">
+            <div className="page-heading">
               <h3>进度概览</h3>
               <span className="muted-text">最后更新：{lastUpdatedAt ?? '尚未刷新'}</span>
             </div>
@@ -419,7 +419,7 @@ export function ContactIntelligencePage() {
           </section>
 
           <section className="panel">
-            <div className="block-heading">
+            <div className="page-heading">
               <h3>任务详情</h3>
               <span className="muted-text">
                 搜索任务：{searchTaskBadge.label} · 联系人任务：{enrichmentTaskBadge.label}
@@ -450,7 +450,7 @@ export function ContactIntelligencePage() {
           </section>
 
           <section className="panel">
-            <div className="block-heading">
+            <div className="page-heading">
               <h3>企业结果</h3>
               <span className="muted-text">
                 展示优先级按待处理排序，当前仅显示前 {visibleLeads.length} 家。
@@ -474,8 +474,10 @@ export function ContactIntelligencePage() {
                   {visibleLeads.map((lead) => (
                     <tr key={lead.id}>
                       <td>
-                        <strong>{lead.company_name ?? '-'}</strong>
-                        <div className="muted-text" style={{ marginTop: 4 }}>{lead.website ?? '-'}</div>
+                        <div className="company-cell">
+                          <strong>{lead.company_name ?? '-'}</strong>
+                          <small>{lead.website ?? '-'}</small>
+                        </div>
                       </td>
                       <td>{lead.country ?? '-'}</td>
                       <td>

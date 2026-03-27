@@ -8,9 +8,11 @@ from sqlalchemy.orm import selectinload
 
 from app.models.contact import Contact
 from app.models.lead import Lead
+from app.models.lead_review import LeadReview
 from app.models.task import Task
 from app.schemas.contact import ContactRead
 from app.schemas.lead import LeadListResponse, LeadRead
+from app.schemas.review import LeadReviewAnnotation
 from app.schemas.task import (
     TaskChildSummaryResponse,
     TaskDetailResponse,
@@ -20,6 +22,7 @@ from app.schemas.task import (
 )
 
 ROOT_TASK_TYPE = "lead_search"
+KEYWORD_TASK_TYPE = "lead_search_keyword"
 CONTACT_TASK_TYPE = "contact_enrich"
 MAX_ROOT_TASK_HISTORY = 20
 
@@ -56,12 +59,100 @@ def task_to_status(task: Task) -> TaskStatusResponse:
     )
 
 
-def lead_to_read(lead: Lead) -> LeadRead:
-    return LeadRead.model_validate(lead)
+def _review_to_annotation(review: LeadReview) -> LeadReviewAnnotation:
+    return LeadReviewAnnotation(
+        verdict=review.verdict,
+        source_path=review.source_path,
+        note=review.note,
+        updated_at=review.updated_at,
+    )
+
+
+def lead_to_read(lead: Lead, review_annotations: dict[str, LeadReviewAnnotation] | None = None) -> LeadRead:
+    raw_data = dict(lead.raw_data or {})
+    payload = {
+        "id": lead.id,
+        "task_id": lead.task_id,
+        "company_name": lead.company_name,
+        "website": lead.website,
+        "facebook_url": lead.facebook_url,
+        "linkedin_url": lead.linkedin_url,
+        "country": lead.country,
+        "continent": lead.continent,
+        "matched_keywords": lead.matched_keywords,
+        "source": lead.source,
+        "contact_status": lead.contact_status,
+        "decision_maker_status": lead.decision_maker_status,
+        "general_contact_status": lead.general_contact_status,
+        "contact_name": lead.contact_name,
+        "contact_title": lead.contact_title,
+        "linkedin_personal_url": lead.linkedin_personal_url,
+        "personal_email": lead.personal_email,
+        "work_email": lead.work_email,
+        "phone": lead.phone,
+        "whatsapp": lead.whatsapp,
+        "potential_contacts": lead.potential_contacts,
+        "general_emails": lead.general_emails,
+        "field_provenance": raw_data.get("field_provenance"),
+        "review_annotations": review_annotations or None,
+        "raw_data": raw_data,
+        "created_at": lead.created_at,
+    }
+    return LeadRead.model_validate(payload)
 
 
 def contact_to_read(contact: Contact) -> ContactRead:
     return ContactRead.model_validate(contact)
+
+
+def _normalize_keyword_list(values: list[str] | None) -> list[str]:
+    if not values:
+        return []
+    normalized: list[str] = []
+    seen: set[str] = set()
+    for value in values:
+        keyword = str(value).strip()
+        if not keyword:
+            continue
+        lowered = keyword.lower()
+        if lowered in seen:
+            continue
+        seen.add(lowered)
+        normalized.append(keyword)
+    return normalized
+
+
+def _task_keywords(task: Task) -> list[str]:
+    params = task.params or {}
+    keywords = _normalize_keyword_list(params.get("keywords") if isinstance(params.get("keywords"), list) else None)
+    if keywords:
+        return keywords
+    product_name = params.get("product_name")
+    if isinstance(product_name, str) and product_name.strip():
+        return [product_name.strip()]
+    keyword = params.get("keyword")
+    if isinstance(keyword, str) and keyword.strip():
+        return [keyword.strip()]
+    return []
+
+
+def _child_task_summary(task: Task) -> TaskChildSummaryResponse:
+    params = task.params or {}
+    keyword = params.get("keyword")
+    if not isinstance(keyword, str) or not keyword.strip():
+        keyword = None
+    cache_hit = bool(params.get("cache_hit")) if params else False
+    return TaskChildSummaryResponse(
+        id=task.id,
+        type=task.type,
+        status=_effective_status(task),
+        progress=task.progress,
+        confirmed_leads=task.confirmed_leads,
+        mode=params.get("mode") if params else None,
+        keyword=keyword,
+        cache_hit=cache_hit,
+        updated_at=task.updated_at,
+    )
 
 
 async def get_task(session: AsyncSession, task_id: UUID) -> Task | None:
@@ -109,22 +200,39 @@ async def _latest_contact_task_summary(session: AsyncSession, task_id: UUID) -> 
     child = result.scalar_one_or_none()
     if child is None:
         return None
-    return TaskChildSummaryResponse(
-        id=child.id,
-        status=_effective_status(child),
-        progress=child.progress,
-        mode=(child.params or {}).get("mode") if child.params else None,
-        updated_at=child.updated_at,
+    return _child_task_summary(child)
+
+
+async def _keyword_task_summaries(session: AsyncSession, task_id: UUID) -> list[TaskChildSummaryResponse]:
+    result = await session.execute(
+        select(Task)
+        .where(Task.parent_task_id == task_id, Task.type == KEYWORD_TASK_TYPE)
+        .order_by(Task.created_at.asc(), Task.updated_at.asc())
     )
+    return [_child_task_summary(child) for child in result.scalars().all()]
 
 
 async def build_task_summary(session: AsyncSession, task: Task) -> TaskSummaryResponse:
     lead_count, decision_done_count, general_done_count = await _lead_counts_for_task(session, task.id)
     latest_contact_task = await _latest_contact_task_summary(session, task.id)
+    keyword_tasks = await _keyword_task_summaries(session, task.id)
+    keywords = _task_keywords(task)
+    if not keywords:
+        keywords = [item.keyword for item in keyword_tasks if item.keyword]
+    keyword_count = len(keyword_tasks) if keyword_tasks else len(keywords)
+    completed_keyword_count = sum(1 for item in keyword_tasks if item.status not in {"pending", "running"})
+    if not keyword_tasks and keywords and _effective_status(task) in {"completed", "stopped_early"}:
+        completed_keyword_count = len(keywords)
+    cache_hit_keyword_count = sum(1 for item in keyword_tasks if item.cache_hit)
     status = task_to_status(task)
     return TaskSummaryResponse(
         **status.model_dump(),
         params=task.params,
+        keywords=keywords,
+        keyword_count=keyword_count,
+        completed_keyword_count=completed_keyword_count,
+        cache_hit_keyword_count=cache_hit_keyword_count,
+        keyword_tasks=keyword_tasks,
         lead_count=lead_count,
         decision_maker_done_count=decision_done_count,
         general_contact_done_count=general_done_count,
@@ -189,7 +297,16 @@ async def get_task_leads(
         .offset((page - 1) * page_size)
         .limit(page_size)
     )
-    items = [lead_to_read(lead) for lead in result.scalars().all()]
+    leads = result.scalars().all()
+    review_map: dict[UUID, dict[str, LeadReviewAnnotation]] = {}
+    lead_ids = [lead.id for lead in leads]
+    if lead_ids:
+        review_result = await session.execute(
+            select(LeadReview).where(LeadReview.lead_id.in_(lead_ids))
+        )
+        for review in review_result.scalars().all():
+            review_map.setdefault(review.lead_id, {})[review.field_key] = _review_to_annotation(review)
+    items = [lead_to_read(lead, review_annotations=review_map.get(lead.id)) for lead in leads]
     return LeadListResponse(items=items, total=total, page=page, page_size=page_size)
 
 

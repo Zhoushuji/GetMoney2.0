@@ -35,7 +35,20 @@ EMAIL_PATTERN = re.compile(r"[A-Z0-9._%+-]+@[A-Z0-9.-]+\.[A-Z]{2,}", re.I)
 PHONE_PATTERN = re.compile(r"(?:\+\d[\d\s()-]{8,}\d)")
 WA_ME_PATTERN = re.compile(r"wa\.me/(\d{10,15})", re.I)
 WA_API_PATTERN = re.compile(r"api\.whatsapp\.com/send\?phone=(\d{10,15})", re.I)
-CONTACT_SCAN_PATHS = ["/", "/about", "/about-us", "/team", "/leadership", "/contact", "/contact-us"]
+CONTACT_SCAN_PATHS = [
+    "/",
+    "/about",
+    "/about-us",
+    "/team",
+    "/leadership",
+    "/contact",
+    "/contact-us",
+    "/contacto",
+    "/contato",
+    "/fale-conosco",
+    "/kontakt",
+    "/impressum",
+]
 
 
 class LinkedInPeopleDiagnosticError(Exception):
@@ -142,6 +155,11 @@ class ContactIntelligenceService:
 
     def _guess_role_title_from_text(self, text: str) -> str | None:
         mapping = [
+            (r"\bchair(?:man|person)?\b", "Chairman"),
+            (r"\bpresident\b", "President"),
+            (r"\bvice president\b|\bvp\b", "Vice President"),
+            (r"\bhead\b", "Head"),
+            (r"\bdirector\b", "Director"),
             (r"\bmanaging director\b", "Managing Director"),
             (r"\bchief executive officer\b|\bceo\b", "CEO"),
             (r"\bco-founder\b", "Co-Founder"),

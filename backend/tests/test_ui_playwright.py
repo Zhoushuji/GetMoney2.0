@@ -81,7 +81,7 @@ def test_demo_history_restore_and_contact_noise_reduction() -> None:
         page.get_by_role("link", name="潜在客户发现").click()
         page.wait_for_load_state("networkidle")
         page.reload(wait_until="networkidle")
-        assert page.get_by_placeholder("例如：industrial valve").input_value() == product_name
+        assert page.locator("textarea").first.input_value() == product_name
 
         page.get_by_role("link", name="核心联系人挖掘").click()
         _wait_for_text(page, product_name, timeout=15000)

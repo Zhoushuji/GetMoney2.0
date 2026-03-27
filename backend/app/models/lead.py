@@ -33,6 +33,7 @@ class Lead(Base):
     whatsapp: Mapped[str | None] = mapped_column(String(50))
     potential_contacts: Mapped[dict | None] = mapped_column(JSON)
     general_emails: Mapped[list | None] = mapped_column(JSON)
+    matched_keywords: Mapped[list | None] = mapped_column(JSON, nullable=True)
     raw_data: Mapped[dict | None] = mapped_column(JSON)
     created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), server_default=func.now())
 

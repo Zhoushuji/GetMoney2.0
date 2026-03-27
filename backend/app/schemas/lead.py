@@ -3,16 +3,33 @@ from uuid import UUID
 
 from typing import Literal
 
-from pydantic import BaseModel, Field
+from pydantic import BaseModel, Field, model_validator
+
+from app.schemas.review import LeadReviewAnnotation
+from app.services.search.keyword_cache import normalize_keywords
 
 
 class LeadSearchRequest(BaseModel):
-    product_name: str = Field(min_length=1)
+    keywords: list[str] = Field(default_factory=list)
+    product_name: str | None = Field(default=None, min_length=1)
     continents: list[str] = Field(default_factory=list)
     countries: list[str] = Field(default_factory=list)
     languages: list[str] = Field(default_factory=list)
     target_count: int | None = Field(default=None, ge=1)
     mode: Literal["live", "demo"] = "live"
+
+    @model_validator(mode="after")
+    def validate_keywords(self) -> "LeadSearchRequest":
+        source_keywords = list(self.keywords)
+        if self.product_name:
+            source_keywords.append(self.product_name)
+        normalized = normalize_keywords(source_keywords)
+        if not normalized:
+            raise ValueError("at least one keyword is required")
+        self.keywords = normalized
+        if not self.product_name:
+            self.product_name = normalized[0]
+        return self
 
 
 class LeadRead(BaseModel):
@@ -24,6 +41,7 @@ class LeadRead(BaseModel):
     linkedin_url: str | None = None
     country: str | None = None
     continent: str | None = None
+    matched_keywords: list[str] | None = None
     source: str | None = None
     contact_status: str
     decision_maker_status: str = "pending"
@@ -37,6 +55,8 @@ class LeadRead(BaseModel):
     whatsapp: str | None = None
     potential_contacts: dict[str, list[str]] | None = None
     general_emails: list[str] | None = None
+    field_provenance: dict | None = None
+    review_annotations: dict[str, LeadReviewAnnotation] | None = None
     raw_data: dict | None = None
     created_at: datetime
 
