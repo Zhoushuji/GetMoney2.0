@@ -8,19 +8,32 @@ from fastapi import APIRouter, Depends, HTTPException
 from sqlalchemy import delete, select
 from sqlalchemy.ext.asyncio import AsyncSession
 
+from app.api.deps import ensure_lead_access, ensure_root_task_access, get_current_user
 from app.database import SessionLocal, get_db
 from app.models.contact import Contact
 from app.models.lead import Lead
+from app.models.lead_review import LeadReview
 from app.models.task import Task
+from app.models.user import User
 from app.schemas.contact import ContactEnrichAllRequest, ContactEnrichRequest, ContactListResponse, ContactRead, ContactStatusResponse
 from app.schemas.task import TaskCreateResponse
 from app.services.contact.intelligence import ContactIntelligenceService
-from app.services.workspace_store import CONTACT_TASK_TYPE, get_contact_list, get_lead_with_contacts
+from app.services.workspace_store import CONTACT_TASK_TYPE, get_contact_list
 
 router = APIRouter(prefix="/contacts", tags=["contacts"])
 logger = logging.getLogger(__name__)
 DECISION_PROVENANCE_FIELDS = ("contact_name", "contact_title", "linkedin_personal_url", "personal_email", "work_email")
 GENERAL_PROVENANCE_FIELDS = ("phone", "whatsapp", "potential_contacts")
+CONTACT_REFRESH_REVIEW_FIELDS = {
+    "contact_name",
+    "contact_title",
+    "linkedin_personal_url",
+    "personal_email",
+    "work_email",
+    "phone",
+    "whatsapp",
+    "potential_contacts",
+}
 
 
 def _update_lead_contact_status(lead: Lead, status: str, error: str | None = None) -> None:
@@ -93,6 +106,15 @@ def _clear_general_summary(lead: Lead) -> None:
         field_provenance.pop(field_key, None)
     raw_data["field_provenance"] = field_provenance
     lead.raw_data = raw_data
+
+
+def _lead_needs_contact_refresh(lead: Lead, incorrect_review_fields: set[str] | None = None) -> bool:
+    review_fields = incorrect_review_fields or set()
+    return (
+        lead.decision_maker_status in {"pending", "failed", "timeout", "no_data"}
+        or lead.general_contact_status in {"pending", "failed", "timeout", "no_data"}
+        or bool(review_fields.intersection(CONTACT_REFRESH_REVIEW_FIELDS))
+    )
 
 
 async def _mark_contact_task(task_id: UUID, *, status: str | None = None, completed: int | None = None, progress: int | None = None, phase: str | None = None) -> None:
@@ -314,16 +336,27 @@ async def _run_enrichment_batch(task_id: UUID, lead_ids: list[UUID], mode: str =
 
 
 @router.post("/enrich", response_model=TaskCreateResponse)
-async def enrich_contacts(payload: ContactEnrichRequest, db: AsyncSession = Depends(get_db)) -> TaskCreateResponse:
-    result = await db.execute(select(Lead).where(Lead.id.in_(payload.lead_ids)))
+async def enrich_contacts(
+    payload: ContactEnrichRequest,
+    db: AsyncSession = Depends(get_db),
+    current_user: User = Depends(get_current_user),
+) -> TaskCreateResponse:
+    query = select(Lead).join(Task, Task.id == Lead.task_id).where(Lead.id.in_(payload.lead_ids))
+    if current_user.role != "admin":
+        query = query.where(Task.user_id == current_user.id)
+    result = await db.execute(query)
     leads = result.scalars().all()
+    if len(leads) != len(payload.lead_ids):
+        raise HTTPException(status_code=404, detail="One or more leads were not found")
     lead_ids = [lead.id for lead in leads]
     parent_task_id = leads[0].task_id if leads else None
     if parent_task_id and any(lead.task_id != parent_task_id for lead in leads):
         raise HTTPException(status_code=400, detail="All lead_ids must belong to the same lead search task")
+    parent_task = await ensure_root_task_access(db, parent_task_id, current_user) if parent_task_id else None
 
     now = datetime.now(timezone.utc)
     task = Task(
+        user_id=parent_task.user_id if parent_task is not None else current_user.id,
         parent_task_id=parent_task_id,
         type=CONTACT_TASK_TYPE,
         status="pending",
@@ -347,38 +380,48 @@ async def enrich_contacts(payload: ContactEnrichRequest, db: AsyncSession = Depe
 
 
 @router.post("/enrich/all", response_model=TaskCreateResponse)
-async def enrich_all_contacts(payload: ContactEnrichAllRequest, db: AsyncSession = Depends(get_db)) -> TaskCreateResponse:
-    result = await db.execute(
-        select(Lead.id).where(
-            Lead.task_id == payload.task_id,
-            (
-                Lead.decision_maker_status.in_(("pending", "failed", "timeout", "no_data"))
-                | Lead.general_contact_status.in_(("pending", "failed", "timeout", "no_data"))
-            ),
+async def enrich_all_contacts(
+    payload: ContactEnrichAllRequest,
+    db: AsyncSession = Depends(get_db),
+    current_user: User = Depends(get_current_user),
+) -> TaskCreateResponse:
+    await ensure_root_task_access(db, payload.task_id, current_user)
+    lead_result = await db.execute(select(Lead).where(Lead.task_id == payload.task_id))
+    leads = lead_result.scalars().all()
+    lead_ids = [lead.id for lead in leads]
+    review_map: dict[UUID, set[str]] = {}
+    if lead_ids:
+        review_result = await db.execute(
+            select(LeadReview).where(
+                LeadReview.lead_id.in_(lead_ids),
+                LeadReview.verdict == "incorrect",
+                LeadReview.field_key.in_(tuple(CONTACT_REFRESH_REVIEW_FIELDS)),
+            )
         )
-    )
-    lead_ids = list(result.scalars().all())
-    return await enrich_contacts(ContactEnrichRequest(lead_ids=lead_ids), db)
+        for review in review_result.scalars().all():
+            review_map.setdefault(review.lead_id, set()).add(review.field_key)
+    target_lead_ids = [lead.id for lead in leads if _lead_needs_contact_refresh(lead, review_map.get(lead.id))]
+    lead_ids = target_lead_ids
+    return await enrich_contacts(ContactEnrichRequest(lead_ids=lead_ids), db, current_user)
 
 
 @router.get("", response_model=ContactListResponse)
-async def list_contacts(lead_id: UUID, db: AsyncSession = Depends(get_db)) -> ContactListResponse:
+async def list_contacts(
+    lead_id: UUID,
+    db: AsyncSession = Depends(get_db),
+    current_user: User = Depends(get_current_user),
+) -> ContactListResponse:
+    await ensure_lead_access(db, lead_id, current_user)
     return ContactListResponse(contacts=await get_contact_list(db, lead_id))
 
 
 @router.get("/status/{lead_id}", response_model=ContactStatusResponse)
-async def get_contact_status(lead_id: UUID, db: AsyncSession = Depends(get_db)) -> ContactStatusResponse:
-    lead = await get_lead_with_contacts(db, lead_id)
-    if not lead:
-        return ContactStatusResponse(
-            lead_id=lead_id,
-            decision_maker_status="failed",
-            general_contact_status="failed",
-            contacts=[],
-            potential_contacts=None,
-            error="Lead not found",
-            error_details={"type": "NotFound", "message": "Lead not found", "website": None, "company_name": None},
-        )
+async def get_contact_status(
+    lead_id: UUID,
+    db: AsyncSession = Depends(get_db),
+    current_user: User = Depends(get_current_user),
+) -> ContactStatusResponse:
+    lead = await ensure_lead_access(db, lead_id, current_user, with_contacts=True)
     raw_data = lead.raw_data or {}
     error = raw_data.get("contact_error")
     return ContactStatusResponse(

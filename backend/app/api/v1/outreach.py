@@ -5,10 +5,12 @@ from fastapi import APIRouter, Depends, Query
 from sqlalchemy import func, select
 from sqlalchemy.ext.asyncio import AsyncSession
 
+from app.api.deps import ensure_root_task_access, get_current_user
 from app.database import get_db
 from app.models.contact import Contact
 from app.models.lead import Lead
 from app.models.task import Task
+from app.models.user import User
 from app.services.workspace_store import get_all_task_leads, get_latest_root_task_id, get_root_task
 
 router = APIRouter(prefix="/outreach", tags=["outreach"])
@@ -115,8 +117,12 @@ async def _contacts_indexed(session: AsyncSession, task_id: UUID) -> int:
     return int(result.scalar_one() or 0)
 
 
-async def _summarize_leads(session: AsyncSession, task_id: UUID | None) -> dict:
-    selected_task_id = task_id or await get_latest_root_task_id(session)
+async def _summarize_leads(session: AsyncSession, task_id: UUID | None, current_user: User) -> dict:
+    if task_id is not None:
+        selected_task = await ensure_root_task_access(session, task_id, current_user)
+        selected_task_id = selected_task.id
+    else:
+        selected_task_id = await get_latest_root_task_id(session, user_id=current_user.id)
     if not selected_task_id:
         return _empty_preview(None)
 
@@ -252,5 +258,9 @@ async def _summarize_leads(session: AsyncSession, task_id: UUID | None) -> dict:
 
 
 @router.get("/preview")
-async def get_outreach_preview(task_id: UUID | None = Query(None), db: AsyncSession = Depends(get_db)) -> dict:
-    return await _summarize_leads(db, task_id)
+async def get_outreach_preview(
+    task_id: UUID | None = Query(None),
+    db: AsyncSession = Depends(get_db),
+    current_user: User = Depends(get_current_user),
+) -> dict:
+    return await _summarize_leads(db, task_id, current_user)

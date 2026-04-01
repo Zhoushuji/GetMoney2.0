@@ -3,10 +3,14 @@ import { NavLink, Outlet, useOutletContext } from 'react-router-dom';
 
 import { apiClient } from '../../api/client';
 import { useTaskStore } from '../../stores/useTaskStore';
+import { useAuthStore } from '../../stores/useAuthStore';
 
 export type WorkspaceTaskSummary = {
   id: string;
   type?: string | null;
+  user_id?: string | null;
+  owner_username?: string | null;
+  owner_role?: string | null;
   status: string;
   progress: number;
   total: number;
@@ -50,24 +54,31 @@ type WorkspaceContextValue = {
   refreshTaskHistory: (preferredTaskId?: string) => Promise<void>;
 };
 
-const navigationItems = [
-  { to: '/', label: '潜在客户发现', end: true },
-  { to: '/history', label: '任务记录' },
-  { to: '/reviews', label: '审核记录' },
-  { to: '/contacts', label: '核心联系人挖掘' },
-  { to: '/outreach', label: '客户触达与拓展' },
-  { to: '/testing', label: '功能测试' },
-];
-
 export function useWorkspaceContext() {
   return useOutletContext<WorkspaceContextValue>();
 }
 
 export function AppLayout() {
   const { taskId, setTaskId } = useTaskStore();
+  const currentUser = useAuthStore((state) => state.user);
+  const clearSession = useAuthStore((state) => state.clearSession);
   const [taskHistory, setTaskHistory] = useState<WorkspaceTaskSummary[]>([]);
   const [historyLoading, setHistoryLoading] = useState(true);
   const [historyError, setHistoryError] = useState<string | null>(null);
+  const navigationItems = [
+    { to: '/', label: '潜在客户发现', end: true },
+    { to: '/history', label: '任务记录' },
+    { to: '/reviews', label: '审核记录' },
+    { to: '/contacts', label: '核心联系人挖掘' },
+    ...(currentUser?.role === 'admin'
+      ? [
+          { to: '/outreach', label: '客户触达与拓展' },
+          { to: '/testing', label: '功能测试' },
+          { to: '/admin/users', label: '用户管理' },
+          { to: '/admin/tasks', label: '任务管理' },
+        ]
+      : []),
+  ];
 
   const refreshTaskHistory = async (preferredTaskId?: string) => {
     setHistoryLoading(true);
@@ -139,6 +150,29 @@ export function AppLayout() {
             </NavLink>
           ))}
         </nav>
+        <div className="account-card">
+          <div className="account-meta">
+            <strong className="account-name">{currentUser?.username}</strong>
+            <div className="account-badges">
+              <span className="account-badge account-badge-role">
+                {currentUser?.role === 'admin' ? '管理员' : '普通用户'}
+              </span>
+              <span className="account-badge account-badge-quota">
+                {currentUser?.role === 'admin' ? '不限额' : `每日额度 ${currentUser?.daily_task_limit ?? 0}`}
+              </span>
+            </div>
+          </div>
+          <button
+            className="button secondary"
+            type="button"
+            onClick={() => {
+              clearSession();
+              setTaskId(undefined);
+            }}
+          >
+            退出登录
+          </button>
+        </div>
       </header>
       <main className="single-page-content">
         <Outlet context={{ taskHistory, historyLoading, historyError, refreshTaskHistory }} />

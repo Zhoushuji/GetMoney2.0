@@ -10,6 +10,7 @@ from app.models.contact import Contact
 from app.models.lead import Lead
 from app.models.lead_review import LeadReview
 from app.models.task import Task
+from app.models.user import User
 from app.schemas.contact import ContactRead
 from app.schemas.lead import LeadListResponse, LeadRead
 from app.schemas.review import LeadReviewAnnotation
@@ -37,6 +38,9 @@ def task_to_status(task: Task) -> TaskStatusResponse:
     return TaskStatusResponse(
         id=task.id,
         type=task.type,
+        user_id=task.user_id,
+        owner_username=task.user.username if task.user is not None else None,
+        owner_role=task.user.role if task.user is not None else None,
         parent_task_id=task.parent_task_id,
         status=_effective_status(task),
         progress=task.progress,
@@ -156,22 +160,29 @@ def _child_task_summary(task: Task) -> TaskChildSummaryResponse:
 
 
 async def get_task(session: AsyncSession, task_id: UUID) -> Task | None:
-    return await session.get(Task, task_id)
+    result = await session.execute(
+        select(Task)
+        .options(selectinload(Task.user))
+        .where(Task.id == task_id)
+    )
+    return result.scalar_one_or_none()
 
 
 async def get_root_task(session: AsyncSession, task_id: UUID) -> Task | None:
-    task = await session.get(Task, task_id)
+    task = await get_task(session, task_id)
     if task is None:
         return None
     if task.type == ROOT_TASK_TYPE or task.parent_task_id is None:
         return task
-    return await session.get(Task, task.parent_task_id)
+    return await get_task(session, task.parent_task_id)
 
 
-async def get_latest_root_task_id(session: AsyncSession) -> UUID | None:
+async def get_latest_root_task_id(session: AsyncSession, *, user_id: UUID | None = None) -> UUID | None:
+    query = select(Task.id).where(Task.type == ROOT_TASK_TYPE)
+    if user_id is not None:
+        query = query.where(Task.user_id == user_id)
     result = await session.execute(
-        select(Task.id)
-        .where(Task.type == ROOT_TASK_TYPE)
+        query
         .order_by(Task.updated_at.desc(), Task.created_at.desc())
         .limit(1)
     )
@@ -254,18 +265,36 @@ async def get_task_history(
     limit: int = MAX_ROOT_TASK_HISTORY,
     offset: int = 0,
     task_type: str = ROOT_TASK_TYPE,
+    user_id: UUID | None = None,
+    owner_role: str | None = None,
+    status: str | None = None,
+    created_from=None,
+    created_to=None,
 ) -> TaskHistoryListResponse:
+    filters = [Task.type == task_type, Task.parent_task_id.is_(None)]
+    if user_id is not None:
+        filters.append(Task.user_id == user_id)
+    if owner_role:
+        filters.append(User.role == owner_role)
+    if status:
+        filters.append(Task.status == status)
+    if created_from is not None:
+        filters.append(Task.created_at >= created_from)
+    if created_to is not None:
+        filters.append(Task.created_at <= created_to)
     total = int(
         (
             await session.execute(
-                select(func.count(Task.id)).where(Task.type == task_type, Task.parent_task_id.is_(None))
+                select(func.count(Task.id)).select_from(Task).join(User, User.id == Task.user_id, isouter=True).where(*filters)
             )
         ).scalar_one()
         or 0
     )
     result = await session.execute(
         select(Task)
-        .where(Task.type == task_type, Task.parent_task_id.is_(None))
+        .join(User, User.id == Task.user_id, isouter=True)
+        .options(selectinload(Task.user))
+        .where(*filters)
         .order_by(Task.updated_at.desc(), Task.created_at.desc())
         .offset(offset)
         .limit(limit)
@@ -337,14 +366,22 @@ async def get_contact_list(session: AsyncSession, lead_id: UUID) -> list[Contact
     return [contact_to_read(contact) for contact in result.scalars().all()]
 
 
-async def cleanup_old_root_tasks(session: AsyncSession, *, keep: int = MAX_ROOT_TASK_HISTORY) -> None:
+async def cleanup_old_root_tasks(
+    session: AsyncSession,
+    *,
+    keep: int = MAX_ROOT_TASK_HISTORY,
+    user_id: UUID | None = None,
+) -> None:
+    filters = [
+        Task.type == ROOT_TASK_TYPE,
+        Task.parent_task_id.is_(None),
+        Task.status.notin_(("pending", "running")),
+    ]
+    if user_id is not None:
+        filters.append(Task.user_id == user_id)
     stale_result = await session.execute(
         select(Task.id)
-        .where(
-            Task.type == ROOT_TASK_TYPE,
-            Task.parent_task_id.is_(None),
-            Task.status.notin_(("pending", "running")),
-        )
+        .where(*filters)
         .order_by(Task.updated_at.desc(), Task.created_at.desc())
         .offset(keep)
     )

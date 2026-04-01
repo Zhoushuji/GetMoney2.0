@@ -6,8 +6,10 @@ from app.models.proxy import Proxy
 from app.models.search_keyword import SearchKeyword
 from app.models.search_keyword_company import SearchKeywordCompany
 from app.models.task import Task
+from app.models.user import User
 
 __all__ = [
+    "User",
     "Task",
     "Lead",
     "Contact",

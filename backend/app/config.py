@@ -15,6 +15,7 @@ class Settings(BaseSettings):
     environment: Literal["development", "production", "test"] = "development"
     log_level: str = "INFO"
     secret_key: str = "change_me_in_production"
+    auth_secret_key: str = ""
     database_url: str = "postgresql+asyncpg://postgres:postgres_secret_change_me@127.0.0.1:5432/leadgen"
     redis_url: str = "redis://127.0.0.1:6379/0"
     serper_api_key: str = ""
@@ -28,6 +29,9 @@ class Settings(BaseSettings):
     max_concurrent_scrapers: int = 3
     request_delay_min: int = 2
     request_delay_max: int = 5
+    auth_token_ttl_hours: int = 24
+    initial_admin_username: str = "Haocheng"
+    initial_admin_password: str = "Maxwell0088.."
 
     @field_validator("backend_cors_origins", "proxy_list", mode="before")
     @classmethod

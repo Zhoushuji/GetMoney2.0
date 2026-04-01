@@ -8,6 +8,7 @@ import { formatTaskKeywordTitle, extractTaskKeywords } from '../../components/La
 import { LeadSearchForm, LeadSearchPayload } from '../../components/SearchForm/LeadSearchForm';
 import { LeadReviewAnnotation, LeadTable, LeadRow } from '../../components/DataTable/LeadTable';
 import { TaskProgressCard } from '../../components/TaskProgress/TaskProgressCard';
+import { useAuthStore } from '../../stores/useAuthStore';
 import { useTaskStore } from '../../stores/useTaskStore';
 
 type TaskStatus = {
@@ -100,6 +101,8 @@ function formatTaskOptionLabel(task: WorkspaceTaskSummary): string {
 }
 
 export function LeadDiscoveryPage() {
+  const currentUser = useAuthStore((state) => state.user);
+  const isAdmin = currentUser?.role === 'admin';
   const { taskId, setTaskId } = useTaskStore();
   const { taskHistory, historyLoading, historyError, refreshTaskHistory } = useWorkspaceContext();
   const [isSubmitting, setIsSubmitting] = useState(false);
@@ -541,22 +544,24 @@ export function LeadDiscoveryPage() {
         />
       </section>
 
-      <section className="panel section-panel step3-card">
-        <h2>▼ STEP 3 — 客户触达与商业拓展</h2>
-        <div className="locked-card">
-          <div className="locked-icon">🔒</div>
-          <div>
-            <h3>客户触达与商业拓展</h3>
-            <p>即将开放，功能规划中</p>
-            <div className="tag-list">
-              <span className="tag">邮件序列</span>
-              <span className="tag">LinkedIn InMail</span>
-              <span className="tag">WhatsApp 触达</span>
-              <span className="tag">触达追踪</span>
+      {isAdmin ? (
+        <section className="panel section-panel step3-card">
+          <h2>▼ STEP 3 — 客户触达与商业拓展</h2>
+          <div className="locked-card">
+            <div className="locked-icon">🔒</div>
+            <div>
+              <h3>客户触达与商业拓展</h3>
+              <p>即将开放，功能规划中</p>
+              <div className="tag-list">
+                <span className="tag">邮件序列</span>
+                <span className="tag">LinkedIn InMail</span>
+                <span className="tag">WhatsApp 触达</span>
+                <span className="tag">触达追踪</span>
+              </div>
             </div>
           </div>
-        </div>
-      </section>
+        </section>
+      ) : null}
     </div>
   );
 }

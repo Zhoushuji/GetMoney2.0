@@ -18,6 +18,7 @@ from sqlalchemy import delete, func, select
 from sqlalchemy.exc import IntegrityError
 from sqlalchemy.ext.asyncio import AsyncSession
 
+from app.api.deps import ensure_lead_access, ensure_root_task_access, get_current_user, require_admin, start_of_today_utc
 from app.config import get_settings
 from app.database import SessionLocal, get_db
 from app.models.company import Company
@@ -26,6 +27,7 @@ from app.models.lead_review import LeadReview
 from app.models.search_keyword import SearchKeyword
 from app.models.search_keyword_company import SearchKeywordCompany
 from app.models.task import Task
+from app.models.user import User
 from app.schemas.lead import LeadListResponse, LeadSearchRequest
 from app.schemas.review import LeadReviewAnnotation, LeadReviewUpsertRequest, REVIEWABLE_FIELD_KEYS
 from app.schemas.task import TaskCreateResponse
@@ -1061,11 +1063,33 @@ def _ensure_reviewable_field(field_key: str) -> str:
     return normalized
 
 
+async def _enforce_daily_task_limit(db: AsyncSession, current_user: User) -> None:
+    if current_user.role == "admin":
+        return
+    result = await db.execute(
+        select(func.count(Task.id)).where(
+            Task.user_id == current_user.id,
+            Task.type == ROOT_TASK_TYPE,
+            Task.parent_task_id.is_(None),
+            Task.created_at >= start_of_today_utc(),
+        )
+    )
+    created_today = int(result.scalar_one() or 0)
+    if created_today >= current_user.daily_task_limit:
+        raise HTTPException(status_code=429, detail="Daily root task limit reached")
+
+
 @router.post("/search", response_model=TaskCreateResponse)
-async def create_lead_search(payload: LeadSearchRequest, db: AsyncSession = Depends(get_db)) -> TaskCreateResponse:
+async def create_lead_search(
+    payload: LeadSearchRequest,
+    db: AsyncSession = Depends(get_db),
+    current_user: User = Depends(get_current_user),
+) -> TaskCreateResponse:
+    await _enforce_daily_task_limit(db, current_user)
     runtime_plan = _estimate_search_runtime(payload)
     now = datetime.now(timezone.utc)
     root_task = Task(
+        user_id=current_user.id,
         type=ROOT_TASK_TYPE,
         status="pending",
         progress=0,
@@ -1099,6 +1123,7 @@ async def create_lead_search(payload: LeadSearchRequest, db: AsyncSession = Depe
         keyword_plan = _estimate_keyword_runtime(payload, keyword)
         db.add(
             Task(
+                user_id=current_user.id,
                 parent_task_id=root_task.id,
                 type=KEYWORD_TASK_TYPE,
                 status="pending",
@@ -1133,7 +1158,7 @@ async def create_lead_search(payload: LeadSearchRequest, db: AsyncSession = Depe
     await db.commit()
     await db.refresh(root_task)
 
-    await cleanup_old_root_tasks(db)
+    await cleanup_old_root_tasks(db, user_id=current_user.id)
     await db.commit()
 
     asyncio.create_task(_run_root_search_task(root_task.id, payload.model_copy(deep=True)))
@@ -1146,12 +1171,21 @@ async def list_leads(
     page: int = Query(1, ge=1),
     page_size: int = Query(50, ge=1, le=200),
     db: AsyncSession = Depends(get_db),
+    current_user: User = Depends(get_current_user),
 ) -> LeadListResponse:
+    await ensure_root_task_access(db, task_id, current_user)
     return await get_task_leads(db, task_id, page=page, page_size=page_size)
 
 
 @router.get("/export")
-async def export_leads(task_id: UUID, format: str = "xlsx", include_contacts: bool = False, db: AsyncSession = Depends(get_db)):
+async def export_leads(
+    task_id: UUID,
+    format: str = "xlsx",
+    include_contacts: bool = False,
+    db: AsyncSession = Depends(get_db),
+    current_user: User = Depends(get_current_user),
+):
+    await ensure_root_task_access(db, task_id, current_user)
     lead_page = await get_task_leads(db, task_id, page=1, page_size=200)
     leads = lead_page.items
     while len(leads) < lead_page.total:
@@ -1216,11 +1250,10 @@ async def upsert_lead_review(
     field_key: str,
     payload: LeadReviewUpsertRequest,
     db: AsyncSession = Depends(get_db),
+    current_user: User = Depends(get_current_user),
 ) -> LeadReviewAnnotation:
     normalized_field_key = _ensure_reviewable_field(field_key)
-    lead = await db.get(Lead, lead_id)
-    if lead is None:
-        raise HTTPException(status_code=404, detail="Lead not found")
+    lead = await ensure_lead_access(db, lead_id, current_user)
     result = await db.execute(
         select(LeadReview).where(
             LeadReview.lead_id == lead_id,
@@ -1251,8 +1284,14 @@ async def upsert_lead_review(
 
 
 @router.delete("/{lead_id}/reviews/{field_key}")
-async def delete_lead_review(lead_id: UUID, field_key: str, db: AsyncSession = Depends(get_db)) -> dict:
+async def delete_lead_review(
+    lead_id: UUID,
+    field_key: str,
+    db: AsyncSession = Depends(get_db),
+    current_user: User = Depends(get_current_user),
+) -> dict:
     normalized_field_key = _ensure_reviewable_field(field_key)
+    await ensure_lead_access(db, lead_id, current_user)
     result = await db.execute(
         select(LeadReview).where(
             LeadReview.lead_id == lead_id,
@@ -1267,8 +1306,12 @@ async def delete_lead_review(lead_id: UUID, field_key: str, db: AsyncSession = D
 
 
 @router.delete("")
-async def delete_leads(task_id: UUID, db: AsyncSession = Depends(get_db)) -> dict:
-    task = await get_root_task(db, task_id)
+async def delete_leads(
+    task_id: UUID,
+    db: AsyncSession = Depends(get_db),
+    current_admin: User = Depends(require_admin),
+) -> dict:
+    task = await ensure_root_task_access(db, task_id, current_admin)
     if task is not None:
         await db.delete(task)
         await db.commit()

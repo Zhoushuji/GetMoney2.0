@@ -11,6 +11,9 @@ class TaskCreateResponse(BaseModel):
 class TaskStatusResponse(BaseModel):
     id: UUID
     type: str | None = None
+    user_id: UUID | None = None
+    owner_username: str | None = None
+    owner_role: str | None = None
     parent_task_id: UUID | None = None
     status: str
     progress: int

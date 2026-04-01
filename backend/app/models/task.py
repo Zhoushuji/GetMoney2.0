@@ -12,6 +12,7 @@ class Task(Base):
     __tablename__ = "tasks"
 
     id: Mapped[uuid.UUID] = mapped_column(UUID(as_uuid=True), primary_key=True, default=uuid.uuid4)
+    user_id: Mapped[uuid.UUID | None] = mapped_column(UUID(as_uuid=True), ForeignKey("users.id", ondelete="SET NULL"), nullable=True)
     parent_task_id: Mapped[uuid.UUID | None] = mapped_column(UUID(as_uuid=True), ForeignKey("tasks.id", ondelete="CASCADE"), nullable=True)
     type: Mapped[str] = mapped_column(String(50), nullable=False)
     status: Mapped[str] = mapped_column(String(50), default="pending", nullable=False)
@@ -36,3 +37,4 @@ class Task(Base):
     parent_task = relationship("Task", remote_side=[id], back_populates="child_tasks")
     child_tasks = relationship("Task", back_populates="parent_task", cascade="all, delete-orphan")
     leads = relationship("Lead", back_populates="task", cascade="all, delete-orphan")
+    user = relationship("User", back_populates="tasks")

@@ -10,10 +10,12 @@ from openpyxl import Workbook
 from sqlalchemy import select
 from sqlalchemy.ext.asyncio import AsyncSession
 
+from app.api.deps import ensure_root_task_access, get_current_user
 from app.api.v1.leads import _lead_field_value, _style_workbook
 from app.database import get_db
 from app.models.lead import Lead
 from app.models.lead_review import LeadReview
+from app.models.user import User
 from app.schemas.review import LeadReviewListResponse, LeadReviewRecord
 
 router = APIRouter(prefix="/reviews", tags=["reviews"])
@@ -44,7 +46,12 @@ async def _load_review_records(db: AsyncSession, task_id: UUID) -> list[LeadRevi
 
 
 @router.get("", response_model=LeadReviewListResponse)
-async def list_reviews(task_id: UUID = Query(...), db: AsyncSession = Depends(get_db)) -> LeadReviewListResponse:
+async def list_reviews(
+    task_id: UUID = Query(...),
+    db: AsyncSession = Depends(get_db),
+    current_user: User = Depends(get_current_user),
+) -> LeadReviewListResponse:
+    await ensure_root_task_access(db, task_id, current_user)
     items = await _load_review_records(db, task_id)
     return LeadReviewListResponse(items=items, total=len(items))
 
@@ -54,7 +61,9 @@ async def export_reviews(
     task_id: UUID,
     format: str = Query("xlsx", pattern="^(xlsx|csv)$"),
     db: AsyncSession = Depends(get_db),
+    current_user: User = Depends(get_current_user),
 ):
+    await ensure_root_task_access(db, task_id, current_user)
     items = await _load_review_records(db, task_id)
     headers = ["Company", "Field", "Current Value", "Verdict", "Source Path", "Note", "Reviewed At"]
     if format == "csv":
