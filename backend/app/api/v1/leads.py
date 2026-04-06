@@ -3,6 +3,7 @@ from __future__ import annotations
 import asyncio
 import csv
 import math
+from collections import Counter
 from datetime import datetime, timezone
 from io import BytesIO, StringIO
 from urllib.parse import urlparse
@@ -45,6 +46,7 @@ from app.services.search.keyword_cache import (
     normalize_keywords,
     scope_fingerprint,
 )
+from app.services.search.country_sources import match_source_definition
 from app.services.search.serper import SerperClient
 from app.services.workspace_store import ROOT_TASK_TYPE, cleanup_old_root_tasks, get_root_task, get_task_leads
 
@@ -87,6 +89,18 @@ class SearchRuntime:
         self.relevance_classifier = IndustryRelevanceClassifier()
         self.search_semaphore = asyncio.Semaphore(max(1, self.settings.max_concurrent_searches))
         self.scrape_semaphore = asyncio.Semaphore(max(1, self.settings.max_concurrent_scrapers))
+
+
+def _task_total_units(task: Task) -> int:
+    return max(0, int(task.planned_search_requests or 0) + int(task.planned_candidate_budget or 0))
+
+
+def _task_progress_candidates(task: Task) -> int:
+    return max(0, min(int(task.processed_candidates or 0), int(task.planned_candidate_budget or 0)))
+
+
+def _task_completed_units(task: Task) -> int:
+    return max(0, int(task.processed_search_requests or 0) + _task_progress_candidates(task))
 
 
 async def _safe_serper_search(serper_client: SerperClient, query: str, hl: str, gl: str, num: int, page: int = 1) -> dict:
@@ -156,14 +170,42 @@ def _keyword_limit(payload: LeadSearchRequest) -> int | None:
     return payload.target_count
 
 
+def _keyword_fill_target(payload: LeadSearchRequest) -> int:
+    if payload.target_count is not None:
+        return payload.target_count
+    country_count = max(1, len(payload.countries or []))
+    return max(12, country_count * 10)
+
+
+def _minimum_country_results(payload: LeadSearchRequest) -> int:
+    countries = [str(country or "").strip() for country in (payload.countries or []) if str(country or "").strip()]
+    if payload.target_count is not None or len(countries) <= 1:
+        return 0
+    return 1
+
+
+def _country_coverage_satisfied(payload: LeadSearchRequest, country_counts: Counter[str]) -> bool:
+    minimum_results = _minimum_country_results(payload)
+    if minimum_results <= 0:
+        return True
+    selected_countries = {
+        str(country or "").strip()
+        for country in (payload.countries or [])
+        if str(country or "").strip()
+    }
+    return all(country_counts.get(country, 0) >= minimum_results for country in selected_countries)
+
+
 def _max_pages(target_count: int | None) -> int:
     if target_count is None:
-        return 3
+        return 1
     return max(1, min(10, math.ceil(target_count / 50)))
 
 
 def _pages_per_query(payload: LeadSearchRequest) -> int:
     pages = _max_pages(payload.target_count)
+    if payload.target_count is None:
+        return pages
     if payload.mode == "live" and payload.countries:
         return max(2, pages)
     return pages
@@ -185,7 +227,7 @@ def _demo_result_count(payload: LeadSearchRequest) -> int:
 
 def _initial_candidate_budget(target_count: int | None, query_count: int, pages_per_query: int) -> int:
     if target_count is None:
-        return min(query_count * pages_per_query * 10, query_count * 30)
+        return min(max(query_count * 2, 30), 120)
     return max(target_count, target_count * 2)
 
 
@@ -313,18 +355,23 @@ def _refresh_search_task_projection(task: Task) -> None:
     if task.status in {"completed", "failed"}:
         task.progress = 100 if task.status == "completed" else task.progress
         task.estimated_remaining_seconds = 0
+        task.completed = max(task.completed, _task_completed_units(task))
+        task.total = max(task.total, _task_total_units(task))
         return
     if task.planned_search_requests == 0 and task.planned_candidate_budget == 0:
         task.estimated_remaining_seconds = DEMO_TOTAL_SECONDS
         task.progress = 0
+        task.completed = 0
+        task.total = 0
         return
     completed_estimated_seconds = (
         (task.processed_search_requests / max(1, SETTINGS.max_concurrent_searches)) * AVG_SERPER_PAGE_SECONDS
-        + task.processed_candidates * AVG_CANDIDATE_BUILD_SECONDS
+        + _task_progress_candidates(task) * AVG_CANDIDATE_BUILD_SECONDS
     )
     task.estimated_remaining_seconds = max(0, int(math.ceil(estimated_total - completed_estimated_seconds)))
     task.progress = min(99, int(round((min(completed_estimated_seconds, estimated_total) / estimated_total) * 100)))
-    task.completed = task.processed_candidates
+    task.completed = _task_completed_units(task)
+    task.total = _task_total_units(task)
 
 
 async def _recompute_root_task(root_task_id: UUID) -> None:
@@ -340,8 +387,6 @@ async def _recompute_root_task(root_task_id: UUID) -> None:
         root.planned_search_requests = sum(child.planned_search_requests for child in children)
         root.processed_candidates = sum(child.processed_candidates for child in children)
         root.planned_candidate_budget = sum(child.planned_candidate_budget for child in children)
-        root.completed = root.processed_candidates
-        root.total = max(root.planned_candidate_budget, 0)
         root.confirmed_leads = sum(child.confirmed_leads for child in children)
         root.estimated_total_seconds = max(1, sum((child.estimated_total_seconds or 0) for child in children) or 1)
         root.estimated_remaining_seconds = sum((child.estimated_remaining_seconds or 0) for child in children if child.status not in {"completed", "failed"})
@@ -636,6 +681,9 @@ async def _build_lead_item(
     domain = canonical_domain(url)
     if not url or not domain or domain in IGNORED_HOSTS:
         return None
+    source_definition = match_source_definition(url)
+    if source_definition is not None and source_definition.source_type in {"directory", "marketplace"}:
+        return None
     website = f"https://{domain}"
 
     if existing_company is not None and _company_is_fresh(existing_company):
@@ -765,6 +813,11 @@ async def _refresh_keyword_cache(
 
     pairs = await _load_keyword_company_pairs(search_keyword_id)
     seen_domains = {company.canonical_domain for _, company in pairs}
+    seen_country_counts: Counter[str] = Counter(
+        str(company.country or "").strip()
+        for _, company in pairs
+        if str(company.country or "").strip()
+    )
     pages_limit = _pages_per_query(payload)
     stages = ((1, PRIMARY_QUERY_TEMPLATES), (2, SECONDARY_QUERY_TEMPLATES))
 
@@ -827,18 +880,47 @@ async def _refresh_keyword_cache(
                         search_keyword_id=search_keyword_id,
                     )
                     seen_domains.add(profile["canonical_domain"])
+                    accepted_country = str(profile.get("country") or query_info["country"] or "").strip()
+                    if accepted_country:
+                        seen_country_counts[accepted_country] += 1
                     if child_task_id is not None:
                         await _mutate_task(child_task_id, confirmed_leads=len(seen_domains))
-                    if target_count is not None and len(seen_domains) >= target_count:
+                    if (
+                        target_count is not None
+                        and len(seen_domains) >= target_count
+                        and _country_coverage_satisfied(payload, seen_country_counts)
+                        and not first_round
+                    ):
                         break
-                if target_count is not None and len(seen_domains) >= target_count:
+                if (
+                    target_count is not None
+                    and len(seen_domains) >= target_count
+                    and _country_coverage_satisfied(payload, seen_country_counts)
+                    and not first_round
+                ):
                     break
             if refresh_one_round and first_round:
                 break
-            first_round = False
-            if target_count is not None and len(seen_domains) >= target_count:
+            if (
+                target_count is not None
+                and len(seen_domains) >= target_count
+                and _country_coverage_satisfied(payload, seen_country_counts)
+                and first_round
+            ):
+                first_round = False
                 break
-        if target_count is not None and len(seen_domains) >= target_count:
+            first_round = False
+            if (
+                target_count is not None
+                and len(seen_domains) >= target_count
+                and _country_coverage_satisfied(payload, seen_country_counts)
+            ):
+                break
+        if (
+            target_count is not None
+            and len(seen_domains) >= target_count
+            and _country_coverage_satisfied(payload, seen_country_counts)
+        ):
             break
 
     await _complete_keyword_refresh(search_keyword_id)
@@ -856,7 +938,7 @@ async def _finalize_child_task(child_task_id: UUID, *, keyword: str, items: list
         task.status = "completed"
         task.phase = "completed"
         task.progress = 100
-        task.completed = max(task.processed_candidates, len(items))
+        task.completed = max(task.total, _task_completed_units(task), len(items))
         task.confirmed_leads = len(items)
         task.estimated_remaining_seconds = 0
         task.updated_at = datetime.now(timezone.utc)
@@ -897,9 +979,7 @@ async def _run_keyword_search_task(
     claimed = await _claim_keyword_refresh(keyword_row.id)
     if claimed:
         try:
-            fill_target = limit
-            if fill_target is None:
-                fill_target = max(10, len(payload.countries or [""]) * len(payload.languages or ["en"]))
+            fill_target = _keyword_fill_target(payload) if limit is None else limit
             await _refresh_keyword_cache(
                 runtime,
                 search_keyword_id=keyword_row.id,
@@ -968,7 +1048,7 @@ async def _persist_root_results(task_id: UUID, results: list[dict], *, error: st
         task.status = "completed" if results or not error else "failed"
         task.phase = "completed" if results or not error else "failed"
         task.progress = 100 if results or not error else task.progress
-        task.completed = max(task.processed_candidates, len(results))
+        task.completed = max(task.total, _task_completed_units(task), len(results))
         task.confirmed_leads = len(results)
         task.error = error
         task.estimated_remaining_seconds = 0
@@ -1093,7 +1173,7 @@ async def create_lead_search(
         type=ROOT_TASK_TYPE,
         status="pending",
         progress=0,
-        total=runtime_plan["planned_candidate_budget"],
+        total=runtime_plan["planned_search_requests"] + runtime_plan["planned_candidate_budget"],
         completed=0,
         target_count=payload.target_count,
         confirmed_leads=0,
@@ -1128,7 +1208,7 @@ async def create_lead_search(
                 type=KEYWORD_TASK_TYPE,
                 status="pending",
                 progress=0,
-                total=keyword_plan["planned_candidate_budget"],
+                total=keyword_plan["planned_search_requests"] + keyword_plan["planned_candidate_budget"],
                 completed=0,
                 target_count=payload.target_count,
                 confirmed_leads=0,

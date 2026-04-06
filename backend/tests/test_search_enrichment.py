@@ -1,11 +1,22 @@
 import asyncio
 import uuid
+from collections import Counter
 
 import pytest
 from bs4 import BeautifulSoup
 
 from app.api.v1 import leads as leads_module
-from app.api.v1.leads import SearchRuntime, _build_lead_item, _build_queries, _estimate_search_runtime
+from app.api.v1.leads import (
+    SearchRuntime,
+    _build_lead_item,
+    _build_queries,
+    _country_coverage_satisfied,
+    _estimate_search_runtime,
+    _keyword_fill_target,
+    _minimum_country_results,
+    _task_completed_units,
+    _task_total_units,
+)
 from app.services.contact.intelligence import ContactIntelligenceService, LinkedInPeopleDiagnosticError
 from app.schemas.lead import LeadSearchRequest
 from app.services.extraction.country_detection import CountryDetectionResult, CountryDetector, country_gl
@@ -207,9 +218,9 @@ def test_estimate_search_runtime_tracks_target_budget():
         mode="live",
     )
     estimated = _estimate_search_runtime(payload)
-    assert estimated["planned_search_requests"] == 48
+    assert estimated["planned_search_requests"] == 80
     assert estimated["planned_candidate_budget"] == 40
-    assert estimated["estimated_total_seconds"] > 40
+    assert estimated["estimated_total_seconds"] > 200
 
 
 def test_estimate_search_runtime_demo_is_small():
@@ -240,6 +251,112 @@ def test_build_queries_use_target_country_gl_and_local_language_term():
     assert country_gl("Brazil") == "br"
     assert any(query["language"] == "en" and "Egypt" in query["query"] for query in queries)
     assert any(query["language"] == "ar" and "مصر" in query["query"] for query in queries)
+
+
+def test_build_queries_expand_land_level_variants_and_templates():
+    payload = LeadSearchRequest(
+        product_name="laser land level",
+        countries=["Pakistan"],
+        languages=["en", "ur"],
+        mode="live",
+    )
+    queries = _build_queries(payload, keyword="laser land level", stage=1)
+
+    query_texts = {str(item["query"]) for item in queries}
+    assert any("laser land leveler" in query for query in query_texts)
+    assert any("laser land leveller" in query for query in query_texts)
+    assert any("gps land leveler" in query for query in query_texts)
+    assert any(" dealer in " in query for query in query_texts)
+    assert any(" distributor in " in query for query in query_texts)
+
+
+def test_build_queries_do_not_cross_join_unrelated_country_languages():
+    payload = LeadSearchRequest(
+        product_name="laser land leveler",
+        countries=["Thailand", "Vietnam", "Pakistan"],
+        languages=["en", "th", "vi", "ur"],
+        mode="live",
+    )
+
+    queries = _build_queries(payload)
+
+    thailand_languages = {query["language"] for query in queries if query["country"] == "Thailand"}
+    vietnam_languages = {query["language"] for query in queries if query["country"] == "Vietnam"}
+    pakistan_languages = {query["language"] for query in queries if query["country"] == "Pakistan"}
+
+    assert thailand_languages == {"en", "th"}
+    assert vietnam_languages == {"en", "vi"}
+    assert pakistan_languages == {"en", "ur"}
+    assert len(queries) == 120
+
+
+def test_build_queries_interleave_countries_early_in_primary_round():
+    payload = LeadSearchRequest(
+        product_name="laser land level",
+        countries=["Thailand", "Vietnam", "Pakistan"],
+        languages=["en", "th", "vi", "ur"],
+        mode="live",
+    )
+
+    queries = _build_queries(payload, keyword="laser land level", stage=1)
+    first_six_countries = [str(query["country"]) for query in queries[:6]]
+
+    assert first_six_countries == ["Thailand", "Thailand", "Vietnam", "Vietnam", "Pakistan", "Pakistan"]
+
+
+def test_estimate_search_runtime_open_ended_is_capped_for_multi_country_search():
+    payload = LeadSearchRequest(
+        product_name="laser land leveler",
+        countries=["Thailand", "Vietnam", "Pakistan"],
+        languages=["en", "th", "vi", "ur"],
+        mode="live",
+    )
+
+    estimated = _estimate_search_runtime(payload)
+
+    assert estimated["planned_search_requests"] == 150
+    assert estimated["planned_candidate_budget"] == 120
+    assert estimated["estimated_total_seconds"] < 1000
+
+
+def test_open_ended_fill_target_scales_with_country_count():
+    payload = LeadSearchRequest(
+        product_name="laser land level",
+        countries=["Thailand", "Vietnam", "Pakistan"],
+        languages=["en", "th", "vi", "ur"],
+        mode="live",
+    )
+
+    assert _keyword_fill_target(payload) == 30
+
+
+def test_multi_country_open_ended_search_requires_at_least_one_result_per_country():
+    payload = LeadSearchRequest(
+        product_name="laser land level",
+        countries=["Thailand", "Vietnam", "Pakistan"],
+        languages=["en", "th", "vi", "ur"],
+        mode="live",
+    )
+
+    assert _minimum_country_results(payload) == 1
+    assert _country_coverage_satisfied(payload, Counter({"Thailand": 10, "Vietnam": 8})) is False
+    assert _country_coverage_satisfied(payload, Counter({"Thailand": 10, "Vietnam": 8, "Pakistan": 1})) is True
+
+
+def test_task_completed_units_cap_candidate_progress_to_budget():
+    task = type(
+        "TaskStub",
+        (),
+        {
+            "processed_search_requests": 101,
+            "processed_candidates": 932,
+            "planned_search_requests": 440,
+            "planned_candidate_budget": 240,
+        },
+    )()
+
+    assert _task_total_units(task) == 680
+    assert _task_completed_units(task) == 341
 
 
 def test_country_detector_rejects_india_for_egypt_target():
